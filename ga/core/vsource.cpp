@@ -88,6 +88,8 @@ vsource_frame_init(int channel, vsource_frame_t *frame) {
 	//
 	bzero(frame, sizeof(vsource_frame_t));
 	//
+	frame->frame_index = 0;  // Initialize frame index
+	//
 	for(i = 0; i < VIDEO_SOURCE_MAX_STRIDE; i++) {
 		frame->linesize[i] = vs->max_stride;
 	}
@@ -121,6 +123,7 @@ void
 vsource_dup_frame(vsource_frame_t *src, vsource_frame_t *dst) {
 	int j;
 	dst->imgpts = src->imgpts;
+	dst->frame_index = src->frame_index;  // Copy frame index
 	dst->pixelformat = src->pixelformat;
 	for(j = 0; j < VIDEO_SOURCE_MAX_STRIDE; j++) {
 		dst->linesize[j] = src->linesize[j];
@@ -476,11 +479,15 @@ vsource_embed_colorcode(vsource_frame_t *frame, unsigned int value) {
 		return;
 	if(frame->realwidth < vsource_colorcode_total_width)
 		return;
-	if(frame->pixelformat == AV_PIX_FMT_YUV420P) {
+	
+	// Store the original frame index value in the frame structure
+	frame->frame_index = value;
+	
+	if(frame->pixelformat == PIX_FMT_YUV420P) {
 		vsource_embed_yuv_code(frame, value);
-	} else if(frame->pixelformat == AV_PIX_FMT_RGBA) {
+	} else if(frame->pixelformat == PIX_FMT_RGBA) {
 		vsource_embed_rgba_code(frame, value, rgbacolor);
-	} else if(frame->pixelformat == AV_PIX_FMT_BGRA) {
+	} else if(frame->pixelformat == PIX_FMT_BGRA) {
 		vsource_embed_rgba_code(frame, value, bgracolor);
 	}
 	return;

@@ -2,19 +2,10 @@
 include ../Makefile.def
 
 EXT		= so
-CFLAGS		+= -I../../core -DGA_MODULE $(AVCCF) $(L5CF) $(SDLCF)
-
-ifeq ($(strip $(GA_ANDROID)),)
+CFLAGS		+=  -std=c++11 -I../../core -DGA_MODULE $(AVCCF) $(L5CF) $(SDLCF)
 LDFLAGS		= #-L../../core -lga #$(AVCLD) $(SDLLD)
-else
-LDFLAGS		= --sysroot=$(SYSROOT)
-endif
 
 MAKEMODULE	= $(CXX) -o $(TARGET) -shared $^ $(LDFLAGS)
-
-ifeq ($(OS), MSYS)
-EXT		= dll
-endif
 
 ifeq ($(OS), Darwin)
 EXT		= dylib

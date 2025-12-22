@@ -23,7 +23,7 @@
 #include "liveMedia.hh"
 #include "BasicUsageEnvironment.hh"
 
-#define	QOS_INTERVAL_MS	(30 * 1000)	/* report every N seconds */
+#define	QOS_INTERVAL_MS	(5 * 1000)	/* report every N seconds */
 #define QOS_PREFIX_LEN	64
 
 typedef struct qos_record_s {

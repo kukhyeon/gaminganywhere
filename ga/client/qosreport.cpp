@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "ga-common.h"
+#include "ga-conf.h"
 #include "vsource.h"
 #include "rtspclient.h"
 #include "qosreport.h"
@@ -28,6 +29,7 @@
 
 static UsageEnvironment *env = NULL;
 static TaskToken qos_task = NULL;
+static FILE *savefp_pktloss = NULL;
 //
 static int n_qrec = 0;
 static qos_record_t qrec[Q_MAX];
@@ -61,12 +63,30 @@ qos_report(void *clientData) {
 		dRcvd = pkts_received - qrec[i].pkts_received;
 		dKB = KB_received - qrec[i].KB_received;
 		// show info
-		ga_error("%s-report: %.0fKB rcvd; pkt-loss=%d/%d,%.2f%%; bitrate=%.0fKbps; jitter=%u (freq=%uHz)\n",
-			//now.tv_sec, now.tv_usec,
-			qrec[i].prefix, dKB, dExp-dRcvd, dExp, 100.0*(dExp-dRcvd)/dExp,
+		unsigned int pkts_lost = 0;
+		double loss_percent = 0.0;
+		//
+		if(dExp > dRcvd) {
+			pkts_lost = dExp - dRcvd;
+		}
+		if(dExp > 0) {
+			loss_percent = 100.0 * pkts_lost / dExp;
+		}
+		//
+		rtsperror("# %u.%06u %s-report: %.0fKB rcvd; pkt-loss=%u/%u,%.2f%%; bitrate=%.0fKbps; jitter=%u (freq=%uHz)\n",
+			(unsigned) now.tv_sec, (unsigned) now.tv_usec,
+			qrec[i].prefix, dKB, pkts_lost, dExp, loss_percent,
 			8000000.0*dKB/elapsed,
 			stats->jitter(),
 			qrec[i].rtpsrc->timestampFrequency());
+		if(savefp_pktloss != NULL) {
+			ga_save_printf(savefp_pktloss,
+				"[%lu.%06lu] %s-report: loss=%u/%u (%.2f%%), bitrate=%.0fKbps, jitter=%u\n",
+				now.tv_sec, now.tv_usec, qrec[i].prefix,
+				pkts_lost, dExp, loss_percent,
+				8000000.0*dKB/elapsed,
+				stats->jitter());
+		}
 		//
 		qrec[i].pkts_expected = pkts_expected;
 		qrec[i].pkts_received = pkts_received;
@@ -124,6 +144,10 @@ qos_deinit() {
 	if(env != NULL) {
 		env->taskScheduler().unscheduleDelayedTask(qos_task);
 	}
+	if(savefp_pktloss != NULL) {
+		ga_save_close(savefp_pktloss);
+		savefp_pktloss = NULL;
+	}
 	qos_task = NULL;
 	env = NULL;
 	n_qrec = 0;
@@ -134,9 +158,15 @@ qos_deinit() {
 
 int
 qos_init(UsageEnvironment *ue) {
+	char savefile_pktloss[128];
 	env = ue;
 	n_qrec = 0;
 	bzero(qrec, sizeof(qrec));
+	if(ga_conf_readv("save-pktloss-log", savefile_pktloss, sizeof(savefile_pktloss)) != NULL) {
+		if((savefp_pktloss = ga_save_init_txt(savefile_pktloss)) != NULL) {
+			ga_error("qos-measurement: packet loss log enabled (%s).\n", savefile_pktloss);
+		}
+	}
 	ga_error("qos-measurement: initialized.\n");
 	return 0;
 }

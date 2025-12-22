@@ -17,6 +17,9 @@
  */
 
 #include <stdio.h>
+#include <cstdint>
+#include <time.h>
+#include <stdlib.h>
 
 #include "vsource.h"
 #include "rtspconf.h"
@@ -28,6 +31,16 @@
 #include "ga-module.h"
 
 #include "dpipe.h"
+
+#include <map>
+#ifdef WIN32
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,10 +66,120 @@ static int _spslen[VIDEO_SOURCE_CHANNEL_MAX];
 static char *_pps[VIDEO_SOURCE_CHANNEL_MAX];
 static int _ppslen[VIDEO_SOURCE_CHANNEL_MAX];
 
+// Feedback components
+static std::map<uint32_t, struct timeval> frame_send_times;
+static pthread_mutex_t time_map_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int feedback_sock = -1;
+static pthread_t feedback_tid;
+static int feedback_running = 0;
+static FILE *savefp_feedback = NULL;
+
+static void *
+feedback_threadproc(void *arg) {
+	int s;
+	struct sockaddr_in si_me, si_other;
+	int slen = sizeof(si_other);
+	uint32_t recv_frame_id;
+#ifdef WIN32
+	int rlen;
+#else
+	socklen_t rlen;
+#endif
+
+	if ((s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
+		ga_error("feedback server: socket failed\n");
+		return NULL;
+	}
+	
+#ifdef WIN32
+	DWORD timeout = 1000;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+#else
+	struct timeval tv;
+	tv.tv_sec = 1;
+	tv.tv_usec = 0;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+#endif
+
+	memset((char *) &si_me, 0, sizeof(si_me));
+	si_me.sin_family = AF_INET;
+	si_me.sin_port = htons(55555);
+	si_me.sin_addr.s_addr = htonl(INADDR_ANY);
+	
+	if (bind(s, (struct sockaddr*)&si_me, sizeof(si_me)) == -1) {
+		ga_error("feedback server: bind failed\n");
+#ifdef WIN32
+		closesocket(s);
+#else
+		close(s);
+#endif
+		return NULL;
+	}
+	
+	feedback_sock = s;
+	ga_error("feedback server: started on port 55555\n");
+
+	// Log file init
+	char savefile_feedback[128];
+	if(ga_conf_readv("save-feedback-log", savefile_feedback, sizeof(savefile_feedback)) != NULL) {
+		savefp_feedback = ga_save_init_txt(savefile_feedback);
+		if(savefp_feedback) {
+			ga_save_printf(savefp_feedback, "Timestamp, FrameID, RTT(us)\n");
+		}
+	}
+
+	while(feedback_running) {
+		rlen = sizeof(si_other);
+		if (recvfrom(s, (char*)&recv_frame_id, sizeof(recv_frame_id), 0, (struct sockaddr *) &si_other, &rlen) > 0) {
+			pthread_mutex_lock(&time_map_mutex);
+			if (frame_send_times.count(recv_frame_id)) {
+				struct timeval now, sent_time;
+				gettimeofday(&now, NULL);
+				sent_time = frame_send_times[recv_frame_id];
+				
+				long long diff_us = tvdiff_us(&now, &sent_time);
+				
+				if (diff_us > 100000) { // 100ms
+					ga_error("WARNING: Congestion Detected! RTT: %lld ms (Frame #%u)\n", diff_us/1000, recv_frame_id);
+				}
+				
+				// Save to log file
+				if(savefp_feedback != NULL) {
+					ga_save_printf(savefp_feedback, "%u.%06u, %u, %lld\n", now.tv_sec, now.tv_usec, recv_frame_id, diff_us);
+				}
+
+				frame_send_times.erase(recv_frame_id);
+			}
+			if(frame_send_times.size() > 1000) {
+				frame_send_times.erase(frame_send_times.begin());
+			}
+			pthread_mutex_unlock(&time_map_mutex);
+		}
+	}
+	
+	if(savefp_feedback != NULL) {
+		ga_save_close(savefp_feedback);
+		savefp_feedback = NULL;
+	}
+
+#ifdef WIN32
+	closesocket(s);
+#else
+	close(s);
+#endif
+	return NULL;
+}
+
 //#define	SAVEENC	"save.264"
 #ifdef SAVEENC
 static FILE *fsaveenc = NULL;
 #endif
+
+// Frame index tracking for debugging,claude  
+static uint32_t sequential_frame_counter = 0;  // ⭐ 순차 카운터
+static uint32_t random_seed = 0;               // ⭐ 난수 시드
+static void *savefp_frameid = NULL;            // ⭐ 프레임 ID 로그 파일
+static void *savefp_framesize = NULL;          // ⭐ 프레임 크기 로그 파일
 
 static int
 vencoder_deinit(void *arg) {
@@ -67,6 +190,16 @@ vencoder_deinit(void *arg) {
 		fsaveenc = NULL;
 	}
 #endif
+	// ⭐ 로그 파일들 정리
+	if(savefp_frameid != NULL) {
+		ga_save_close((FILE*)savefp_frameid);
+		savefp_frameid = NULL;
+	}
+	if(savefp_framesize != NULL) {
+		ga_save_close((FILE*)savefp_framesize);
+		savefp_framesize = NULL;
+	}
+	
 	for(iid = 0; iid < video_source_channels(); iid++) {
 		if(_sps[iid] != NULL)
 			free(_sps[iid]);
@@ -191,7 +324,7 @@ vencoder_init(void *arg) {
 		params.i_csp = X264_CSP_I420;
 		params.i_width  = outputW;
 		params.i_height = outputH;
-		//params.vui.b_fullrange = 1;
+		params.vui.b_fullrange = 1;
 		params.b_repeat_headers = 1;
 		params.b_annexb = 1;
 		// handle x264-params
@@ -301,13 +434,36 @@ vencoder_threadproc(void *arg) {
 	x264_t *encoder = NULL;
 	//
 	long long basePts = -1LL, newpts = 0LL, pts = -1LL, ptsSync = 0LL;
-	pthread_mutex_t condMutex = PTHREAD_MUTEX_INITIALIZER;
-	pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 	//
 	unsigned char *pktbuf = NULL;
 	int pktbufsize = 0, pktbufmax = 0;
 	int video_written = 0;
 	int64_t x264_pts = 0;
+	
+	// ⭐ 프레임 ID 로그 파일 초기화 (프로그램 시작 시 한 번만)
+	if (savefp_frameid == NULL) {
+		char savefile_frameid[128];
+		if(ga_conf_readv("save-frame-id-timestamp", savefile_frameid, sizeof(savefile_frameid)) != NULL) {
+			savefp_frameid = ga_save_init_txt(savefile_frameid);
+			ga_error("SERVER: Frame ID log file initialized: %s\n", savefile_frameid);
+		}
+	}
+	
+	// ⭐ 프레임 크기 로그 파일 초기화 (프로그램 시작 시 한 번만)
+	if (savefp_framesize == NULL) {
+		char savefile_framesize[128];
+		if(ga_conf_readv("save-frame-size-log", savefile_framesize, sizeof(savefile_framesize)) != NULL) {
+			savefp_framesize = ga_save_init_txt(savefile_framesize);
+			ga_error("SERVER: Frame size log file initialized: %s\n", savefile_framesize);
+		}
+	}
+	
+	// ⭐ 난수 시드 초기화 (프로그램 시작 시 한 번만)
+	if (random_seed == 0) {
+		random_seed = (uint32_t)time(NULL);
+		srand(random_seed);
+		ga_error("SERVER: Random seed initialized: 0x%08X\n", random_seed);
+	}
 	//
 	if(pipe == NULL) {
 		ga_error("video encoder: invalid pipeline specified (%s).\n", pipename);
@@ -321,7 +477,7 @@ vencoder_threadproc(void *arg) {
 	//
 	outputW = video_source_out_width(iid);
 	outputH = video_source_out_height(iid);
-	pktbufmax = outputW * outputH * 2;
+	pktbufmax = outputW * outputH * 2 + 4;  // +4 bytes for frame index header
 	if((pktbuf = (unsigned char*) malloc(pktbufmax)) == NULL) {
 		ga_error("video encoder: allocate memory failed.\n");
 		goto video_quit;
@@ -390,6 +546,7 @@ vencoder_threadproc(void *arg) {
 			av_init_packet(&pkt);
 			pkt.pts = pic_in.i_pts;
 			pkt.stream_index = 0;
+			
 			// concatenate nals
 			pktbufsize = 0;
 			for(i = 0; i < nnal; i++) {
@@ -402,20 +559,57 @@ vencoder_threadproc(void *arg) {
 			}
 			pkt.size = pktbufsize;
 			pkt.data = pktbuf;
-#if 0			// XXX: dump naltype
-			do {
-				int codelen;
-				unsigned char *ptr;
-				fprintf(stderr, "[XXX-naldump]");
-				for(	ptr = ga_find_startcode(pkt.data, pkt.data+pkt.size, &codelen);
-					ptr != NULL;
-					ptr = ga_find_startcode(ptr+codelen, pkt.data+pkt.size, &codelen)) {
-					//
-					fprintf(stderr, " (+%d|%d)-%02x", ptr-pkt.data, codelen, ptr[codelen] & 0x1f);
+			
+			// ⭐ 순차번호 + 작은 난수 기반 고유 프레임 ID 생성
+			uint32_t current_frame_number = sequential_frame_counter++;
+			u_int32_t frameIndex = (current_frame_number << 8) | (rand() & 0xFF);  // 상위 24비트: 순차번호, 하위 8비트: 난수
+			
+			// Record send time for feedback
+			pthread_mutex_lock(&time_map_mutex);
+			struct timeval now;
+			gettimeofday(&now, NULL);
+			frame_send_times[frameIndex] = now;
+			if(frame_send_times.size() > 1000) {
+				frame_send_times.erase(frame_send_times.begin());
+			}
+			pthread_mutex_unlock(&time_map_mutex);
+			
+			// ⭐ 인코딩된 패킷 크기만 추적 (단순화)
+			if(savefp_framesize != NULL) {
+				struct timeval size_tv;
+				gettimeofday(&size_tv, NULL);
+				ga_save_printf((FILE*)savefp_framesize, 
+					"Frame #%d | Encoded: %d bytes | Time: %u.%06u\n",
+					frameIndex, pkt.size, size_tv.tv_sec, size_tv.tv_usec);
+			}
+			
+			// 프레임 인덱스를 패킷 앞에 추가
+			if(pkt.size + 4 <= pktbufmax) {
+				// 기존 데이터를 4바이트 뒤로 이동
+				memmove(pktbuf + 4, pktbuf, pkt.size);
+				
+				pktbuf[0] = (frameIndex >> 24) & 0xFF;  // 최상위 바이트
+				pktbuf[1] = (frameIndex >> 16) & 0xFF;
+				pktbuf[2] = (frameIndex >> 8) & 0xFF;
+				pktbuf[3] = frameIndex & 0xFF;          // 최하위 바이트
+				
+				// 패킷 데이터와 크기 업데이트
+				pkt.data = pktbuf;
+				pkt.size += 4;
+				
+				// ⭐ 파일로 프레임 ID 저장 (깔끔한 로그)
+				if(savefp_frameid != NULL) {
+					struct timeval frameid_tv;
+					gettimeofday(&frameid_tv, NULL);
+					ga_save_printf((FILE*)savefp_frameid, "Frame #%04u → Random ID: %d (pts=%lld, time=%u.%06u)\n", 
+						current_frame_number, (int32_t)frameIndex, pic_in.i_pts, frameid_tv.tv_sec, frameid_tv.tv_usec);
 				}
-				fprintf(stderr, "\n");
-			} while(0);
-#endif
+				
+				// ⭐ 서버 매칭 로그 (순차번호 → 난수 ID 매핑)
+				ga_error("SERVER: Frame #%04u → Random ID: %d (pts=%lld, size=%d)\n", 
+					current_frame_number, (int32_t)frameIndex, pic_in.i_pts, pkt.size);
+			}
+			
 			// send the packet
 			if(encoder_send_packet("video-encoder",
 					iid/*rtspconf->video_id*/, &pkt,
@@ -443,6 +637,10 @@ vencoder_threadproc(void *arg) {
 				pkt.stream_index = 0;
 				pkt.size = nal[i].i_payload;
 				pkt.data = ptr;
+				
+				// 특별한 NAL들(SPS/PPS 등)에는 프레임 ID를 추가하지 않음
+				// 이들은 메타데이터이므로 프레임 식별이 불필요
+				
 				if(encoder_send_packet("video-encoder",
 					iid/*rtspconf->video_id*/, &pkt, pkt.pts, NULL) < 0) {
 					goto video_quit;
@@ -468,6 +666,47 @@ vencoder_threadproc(void *arg) {
 				pkt.stream_index = 0;
 				pkt.size = pktbufsize;
 				pkt.data = pktbuf;
+				
+				// ⭐ 순차번호 + 작은 난수 기반 고유 프레임 ID 생성
+				uint32_t current_frame_number = sequential_frame_counter++;
+				u_int32_t frameIndex = (current_frame_number << 8) | (rand() & 0xFF);  // 상위 24비트: 순차번호, 하위 8비트: 난수
+				
+				// ⭐ 인코딩된 패킷 크기만 추적 (단순화)
+				if(savefp_framesize != NULL) {
+					struct timeval size_tv;
+					gettimeofday(&size_tv, NULL);
+					ga_save_printf((FILE*)savefp_framesize, 
+						"Frame #%04u | Encoded: %d bytes | Time: %u.%06u\n",
+						current_frame_number, pkt.size, size_tv.tv_sec, size_tv.tv_usec);
+				}
+				
+				// 프레임 인덱스를 패킷 앞에 추가
+				if(pkt.size + 4 <= pktbufmax) {
+					// 기존 데이터를 4바이트 뒤로 이동
+					memmove(pktbuf + 4, pktbuf, pkt.size);
+					
+					pktbuf[0] = (frameIndex >> 24) & 0xFF;  // 최상위 바이트
+					pktbuf[1] = (frameIndex >> 16) & 0xFF;
+					pktbuf[2] = (frameIndex >> 8) & 0xFF;
+					pktbuf[3] = frameIndex & 0xFF;          // 최하위 바이트
+					
+					// 패킷 데이터와 크기 업데이트
+					pkt.data = pktbuf;
+					pkt.size += 4;
+					
+					// ⭐ 파일로 프레임 ID 저장 (깔끔한 로그)
+					if(savefp_frameid != NULL) {
+						struct timeval frameid_tv;
+						gettimeofday(&frameid_tv, NULL);
+						ga_save_printf((FILE*)savefp_frameid, "Frame #%04u → Random ID: %d (pts=%lld, time=%u.%06u)\n", 
+							current_frame_number, (int32_t)frameIndex, pic_in.i_pts, frameid_tv.tv_sec, frameid_tv.tv_usec);
+					}
+					
+					// ⭐ 서버 매칭 로그 (순차번호 → 난수 ID 매핑)
+					ga_error("SERVER: Frame #%04u → Random ID: %d (pts=%lld, size=%d)\n", 
+						current_frame_number, (int32_t)frameIndex, pic_in.i_pts, pkt.size);
+				}
+				
 				if(encoder_send_packet("video-encoder",
 					iid/*rtspconf->video_id*/, &pkt, pkt.pts, NULL) < 0) {
 					goto video_quit;
@@ -517,6 +756,13 @@ vencoder_start(void *arg) {
 	if(vencoder_started != 0)
 		return 0;
 	vencoder_started = 1;
+
+	// Start feedback thread
+	feedback_running = 1;
+	if(pthread_create(&feedback_tid, NULL, feedback_threadproc, NULL) != 0) {
+		ga_error("video encoder: cannot create feedback thread\n");
+	}
+
 	for(iid = 0; iid < video_source_channels(); iid++) {
 		snprintf(pipename[iid], MAXPARAMLEN, pipefmt, iid);
 		if(pthread_create(&vencoder_tid[iid], NULL, vencoder_threadproc, pipename[iid]) != 0) {
@@ -536,6 +782,11 @@ vencoder_stop(void *arg) {
 	if(vencoder_started == 0)
 		return 0;
 	vencoder_started = 0;
+
+	// Stop feedback thread
+	feedback_running = 0;
+	pthread_join(feedback_tid, NULL);
+
 	for(iid = 0; iid < video_source_channels(); iid++) {
 		pthread_join(vencoder_tid[iid], &ignored);
 	}
@@ -548,10 +799,9 @@ vencoder_raw(void *arg, int *size) {
 #if defined __APPLE__
 	int64_t in = (int64_t) arg;
 	int iid = (int) (in & 0xffffffffLL);
-#elif defined __x86_64__
-	int iid = (long long) arg;
 #else
-	int iid = (int) arg;
+	intptr_t in = (intptr_t)arg;
+    	int iid = (int)in;
 #endif
 	if(vencoder_initialized == 0)
 		return NULL;
