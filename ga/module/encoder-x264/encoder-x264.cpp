@@ -73,7 +73,7 @@ static int feedback_sock = -1;
 static pthread_t feedback_tid;
 static int feedback_running = 0;
 static FILE *savefp_feedback = NULL;
-
+// ffffeddddbacckckkc
 static void *
 feedback_threadproc(void *arg) {
 	int s;
