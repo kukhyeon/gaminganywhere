@@ -754,6 +754,7 @@ vencoder_threadproc(void *arg) {
 			}
 
 			// Frame count logging (every 1 second)
+			// 인코딩도 성공하고, 전송 함수 호출도 에러 없이 끝난 횟수
 			frame_interval_count++;
 			gettimeofday(&current_log_tv, NULL);
 			long long log_diff_us = tvdiff_us(&current_log_tv, &last_log_tv);
