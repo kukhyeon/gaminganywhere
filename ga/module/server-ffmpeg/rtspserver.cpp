@@ -981,26 +981,89 @@ struct RTCPHeader {
 __attribute__ ((__packed__));
 #endif
 
+// 추가: RTCP Report Block 구조체, claude
+struct RTCPReportBlock {
+	unsigned int ssrc;
+	unsigned int lost;
+	unsigned int last_seq;
+	unsigned int jitter;
+	unsigned int lsr;
+	unsigned int dlsr;
+}
+#ifdef WIN32
+;
+#else
+__attribute__ ((__packed__));
+#endif
+
+// 추가: NTP Short format (middle 32 bits) 계산 함수, claude
+static unsigned int
+get_ntp_short() {
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	// NTP offset: 1970 - 1900 = 2208988800
+	unsigned int seconds = tv.tv_sec + 2208988800U;
+	// 2^32 / 1000000 ~= 4294.9673
+	unsigned int fraction = (unsigned int)(tv.tv_usec * 4294.9673); 
+	return ((seconds & 0xFFFF) << 16) | (fraction >> 16);
+}
+
 static int
 handle_rtcp(RTSPContext *ctx, const char *buf, size_t buflen) {
-#if 0
 	int reqlength;
 	struct RTCPHeader *rtcp;
-	char msg[64] = "", *ptr = msg;
-	//
+	//char msg[64] = "", *ptr = msg;
+	
+	if(buflen < 4) return 0;
+
 	reqlength = (unsigned char) buf[2];
 	reqlength <<= 8;
 	reqlength += (unsigned char) buf[3];
+	
+	// 실제 RTCP 데이터 시작 위치
 	rtcp = (struct RTCPHeader*) (buf+4);
-	//
+	
+	// 패킷 길이 검증
+	if(buflen < 4 + reqlength) {
+		// ga_error("RTCP packet incomplete.\n");
+		return 0;
+	}
+
+	// RTCP 패킷 타입 201 (Receiver Report) 확인
+	// RTCP 헤더(4바이트) + Sender SSRC(4바이트) = 8바이트 이후에 Report Block 시작
+	if(rtcp->pt == 201) { 
+		int rc = RTCP_RC(rtcp);
+		int length = ntohs(rtcp->length); // 32-bit words minus one
+		int real_length = (length + 1) * 4;
+		
+		if(real_length >= 8 + sizeof(struct RTCPReportBlock) && rc > 0) {
+			struct RTCPReportBlock *rb = (struct RTCPReportBlock*)(buf + 4 + 8);
+			unsigned int lsr = ntohl(rb->lsr);
+			unsigned int dlsr = ntohl(rb->dlsr);
+			
+			if(lsr > 0) {
+				unsigned int now = get_ntp_short();
+				unsigned int rtt_ntp = now - lsr - dlsr;
+				// NTP units (1/65536 sec) to milliseconds
+				double rtt_ms = (double)rtt_ntp * 1000.0 / 65536.0;
+				
+				ga_error("RTCP RTT: %.3f ms (LSR=%u, DLSR=%u, Now=%u)\n", 
+					rtt_ms, lsr, dlsr, now);
+			}
+		}
+	}
+
+#if 0
 	ga_error("TCP feedback for stream %d received (%d bytes): ver=%d; sc=%d; pt=%d; length=%d\n",
 		buf[1], reqlength,
 		RTCP_Version(rtcp), RTCP_SC(rtcp), rtcp->pt, ntohs(rtcp->length));
+	/*
 	for(int i = 0; i < 16; i++, ptr += 3) {
 		snprintf(ptr, sizeof(msg)-(ptr-msg),
 			"%2.2x ", (unsigned char) buf[i]);
 	}
 	ga_error("HEX: %s\n", msg);
+	*/
 #endif
 	return 0;
 }
