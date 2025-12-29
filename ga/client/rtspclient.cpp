@@ -63,6 +63,104 @@ using namespace std;
 static int feedback_client_sock = -1;
 static struct sockaddr_in feedback_server_addr;
 
+// --- RTT Client (Port 55556) ---
+typedef struct {
+	uint32_t seq;
+	uint32_t sec;
+	uint32_t usec;
+} rtt_packet_t;
+
+static int rtt_client_sock = -1;
+static pthread_t rtt_client_tid = 0;
+static int rtt_client_running = 0;
+
+static void *
+rtt_echo_threadproc(void *arg) {
+	char *server_ip = (char*)arg;
+	int s;
+	struct sockaddr_in si_me, si_server;
+	rtt_packet_t pkt;
+	
+	if ((s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
+		rtsperror("RTT client: socket failed\n");
+		free(server_ip);
+		return NULL;
+	}
+	
+#ifdef WIN32
+	DWORD timeout = 200;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+#else
+	struct timeval tv = {0, 200000};
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+#endif
+
+	memset((char *) &si_me, 0, sizeof(si_me));
+	si_me.sin_family = AF_INET;
+	si_me.sin_port = htons(0); // Use random port for client to avoid conflict
+	si_me.sin_addr.s_addr = htonl(INADDR_ANY);
+	
+	if (bind(s, (struct sockaddr*)&si_me, sizeof(si_me)) == -1) {
+		rtsperror("RTT client: bind failed\n");
+	}
+	
+	rtt_client_sock = s;
+
+	memset((char *) &si_server, 0, sizeof(si_server));
+	si_server.sin_family = AF_INET;
+	si_server.sin_port = htons(55556);
+#ifdef WIN32
+	si_server.sin_addr.s_addr = inet_addr(server_ip);
+#else
+	inet_aton(server_ip, &si_server.sin_addr);
+#endif
+
+	// Send Hello
+	rtt_packet_t hello = {0,0,0};
+	sendto(s, (const char*)&hello, sizeof(hello), 0, (struct sockaddr*)&si_server, sizeof(si_server));
+	rtsperror("RTT client: started, pinging %s:55556\n", server_ip);
+
+	while(rtt_client_running) {
+#ifdef WIN32
+		int slen = sizeof(si_server);
+#else
+		socklen_t slen = sizeof(si_server);
+#endif
+		struct sockaddr_in si_in;
+		int len = recvfrom(s, (char*)&pkt, sizeof(pkt), 0, (struct sockaddr*)&si_in, &slen);
+		if(len > 0) {
+			sendto(s, (const char*)&pkt, len, 0, (struct sockaddr*)&si_in, sizeof(si_in));
+		}
+	}
+#ifdef WIN32
+	closesocket(s);
+#else
+	close(s);
+#endif
+	free(server_ip);
+	return NULL;
+}
+
+void init_rtt_client(const char *url) {
+	char host[256];
+	const char *p = url;
+	if(strncmp(url, "rtsp://", 7) == 0) p += 7;
+	int i = 0;
+	while(*p && *p != ':' && *p != '/' && i < sizeof(host)-1) host[i++] = *p++;
+	host[i] = '\0';
+	if(strlen(host)==0) strcpy(host, "127.0.0.1");
+
+	rtt_client_running = 1;
+	pthread_create(&rtt_client_tid, NULL, rtt_echo_threadproc, strdup(host));
+}
+
+void deinit_rtt_client() {
+	rtt_client_running = 0;
+	if(rtt_client_tid) pthread_join(rtt_client_tid, NULL);
+	rtt_client_tid = 0;
+}
+// --- End RTT Client ---
+
 void init_feedback_client(const char *url) {
 	char host[256];
 	
@@ -1292,6 +1390,7 @@ rtsp_thread(void *param) {
 
 	// Initialize feedback client
 	init_feedback_client(rtspParam->url);
+	init_rtt_client(rtspParam->url);
 	//
 	if(init_decoder_buffer() < 0) {
 		rtsperror("init decode buffer failed.\n");
@@ -1334,6 +1433,10 @@ rtsp_thread(void *param) {
 	}
 	//
 	shutdownStream(client);
+	
+	// RTT Cleanup
+	deinit_rtt_client();
+
 	deinit_decoder_buffer();
 	rtsperror("rtsp thread: terminated.\n");
 #ifndef ANDROID

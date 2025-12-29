@@ -786,6 +786,138 @@ video_quit:
 	return NULL;
 }
 
+// RTT Server Logic
+static int rtt_sock = -1;
+static pthread_t rtt_tid;
+static int rtt_running = 0;
+static struct sockaddr_in rtt_client_addr;
+static int rtt_client_known = 0;
+static FILE *savefp_rtt = NULL;
+
+typedef struct {
+	uint32_t seq;
+	uint32_t sec;
+	uint32_t usec;
+} rtt_packet_t;
+
+static void *
+rtt_server_threadproc(void *arg) {
+	int s;
+	struct sockaddr_in si_me, si_other;
+	rtt_packet_t send_pkt, recv_pkt;
+	uint32_t seq = 0;
+#ifdef WIN32
+	int rlen;
+#else
+	socklen_t rlen;
+#endif
+
+	if ((s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
+		ga_error("RTT server: socket failed\n");
+		return NULL;
+	}
+	
+#ifdef WIN32
+	DWORD timeout = 100;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+#else
+	struct timeval tv;
+	tv.tv_sec = 0;
+	tv.tv_usec = 100000; // 100ms
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+#endif
+
+	memset((char *) &si_me, 0, sizeof(si_me));
+	si_me.sin_family = AF_INET;
+	si_me.sin_port = htons(55556); // RTT Port
+	si_me.sin_addr.s_addr = htonl(INADDR_ANY);
+	
+	if (bind(s, (struct sockaddr*)&si_me, sizeof(si_me)) == -1) {
+		ga_error("RTT server: bind failed (port 55556)\n");
+#ifdef WIN32
+		closesocket(s);
+#else
+		close(s);
+#endif
+		return NULL;
+	}
+	
+	rtt_sock = s;
+	ga_error("RTT server: started on port 55556\n");
+	
+	// Log file init
+	char savefile_rtt[128];
+	if(ga_conf_readv("save-rtt-log", savefile_rtt, sizeof(savefile_rtt)) != NULL) {
+		savefp_rtt = ga_save_init_txt(savefile_rtt);
+		if(savefp_rtt) {
+			ga_save_printf(savefp_rtt, "Timestamp, Seq, RTT(ms)\n");
+			ga_error("SERVER: RTT log file initialized: %s\n", savefile_rtt);
+		}
+	}
+
+	struct timeval last_ping_time, now;
+	gettimeofday(&last_ping_time, NULL);
+
+	while(rtt_running) {
+		rlen = sizeof(si_other);
+		int recv_len = recvfrom(s, (char*)&recv_pkt, sizeof(recv_pkt), 0, (struct sockaddr *) &si_other, &rlen);
+		
+		if (recv_len > 0) {
+			if (!rtt_client_known || 
+				rtt_client_addr.sin_addr.s_addr != si_other.sin_addr.s_addr ||
+				rtt_client_addr.sin_port != si_other.sin_port) {
+				
+				memcpy(&rtt_client_addr, &si_other, sizeof(si_other));
+				rtt_client_known = 1;
+				ga_error("RTT server: client detected at %s:%d\n", 
+					inet_ntoa(rtt_client_addr.sin_addr), ntohs(rtt_client_addr.sin_port));
+			}
+
+			if (recv_len == sizeof(rtt_packet_t)) {
+				gettimeofday(&now, NULL);
+				struct timeval sent_tv;
+				sent_tv.tv_sec = recv_pkt.sec;
+				sent_tv.tv_usec = recv_pkt.usec;
+				
+				long long diff_us = tvdiff_us(&now, &sent_tv);
+				if (diff_us >= 0 && diff_us < 10000000) {
+					double rtt_ms = diff_us / 1000.0;
+					if (savefp_rtt != NULL) {
+						ga_save_printf(savefp_rtt, "%u.%06u, %u, %.3f\n", now.tv_sec, now.tv_usec, recv_pkt.seq, rtt_ms);
+					}
+				}
+			}
+		}
+
+		gettimeofday(&now, NULL);
+		if (rtt_client_known) {
+			long long interval = tvdiff_us(&now, &last_ping_time);
+			if (interval >= 1000000) { // 1 sec
+				send_pkt.seq = seq++;
+				send_pkt.sec = now.tv_sec;
+				send_pkt.usec = now.tv_usec;
+				
+				sendto(s, (const char*)&send_pkt, sizeof(send_pkt), 0, (struct sockaddr*)&rtt_client_addr, sizeof(rtt_client_addr));
+				last_ping_time = now;
+			}
+		} else {
+			usleep(10000);
+		}
+	}
+
+	if(savefp_rtt != NULL) {
+		ga_save_close(savefp_rtt);
+		savefp_rtt = NULL;
+	}
+
+#ifdef WIN32
+	closesocket(s);
+#else
+	close(s);
+#endif
+	return NULL;
+}
+
 static int
 vencoder_start(void *arg) {
 	int iid;
@@ -800,6 +932,13 @@ vencoder_start(void *arg) {
 	feedback_running = 1;
 	if(pthread_create(&feedback_tid, NULL, feedback_threadproc, NULL) != 0) {
 		ga_error("video encoder: cannot create feedback thread\n");
+	}
+
+	// Start RTT thread
+	rtt_running = 1;
+	rtt_client_known = 0;
+	if(pthread_create(&rtt_tid, NULL, rtt_server_threadproc, NULL) != 0) {
+		ga_error("video encoder: cannot create RTT thread\n");
 	}
 
 	for(iid = 0; iid < video_source_channels(); iid++) {
@@ -825,6 +964,10 @@ vencoder_stop(void *arg) {
 	// Stop feedback thread
 	feedback_running = 0;
 	pthread_join(feedback_tid, NULL);
+
+	// Stop RTT thread
+	rtt_running = 0;
+	pthread_join(rtt_tid, NULL);
 
 	for(iid = 0; iid < video_source_channels(); iid++) {
 		pthread_join(vencoder_tid[iid], &ignored);
