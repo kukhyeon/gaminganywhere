@@ -180,6 +180,7 @@ static uint32_t sequential_frame_counter = 0;  // ⭐ 순차 카운터
 static uint32_t random_seed = 0;               // ⭐ 난수 시드
 static void *savefp_frameid = NULL;            // ⭐ 프레임 ID 로그 파일
 static void *savefp_framesize = NULL;          // ⭐ 프레임 크기 로그 파일
+static void *savefp_fps = NULL;                // ⭐ Frame Count 로그 파일 (추가)
 
 static int
 vencoder_deinit(void *arg) {
@@ -198,6 +199,10 @@ vencoder_deinit(void *arg) {
 	if(savefp_framesize != NULL) {
 		ga_save_close((FILE*)savefp_framesize);
 		savefp_framesize = NULL;
+	}
+	if(savefp_fps != NULL) {
+		ga_save_close((FILE*)savefp_fps);
+		savefp_fps = NULL;
 	}
 	
 	for(iid = 0; iid < video_source_channels(); iid++) {
@@ -440,6 +445,11 @@ vencoder_threadproc(void *arg) {
 	int video_written = 0;
 	int64_t x264_pts = 0;
 	
+	// Frame count logging variables
+	int frame_interval_count = 0;
+	struct timeval last_log_tv, current_log_tv;
+	gettimeofday(&last_log_tv, NULL);
+
 	// ⭐ 프레임 ID 로그 파일 초기화 (프로그램 시작 시 한 번만)
 	if (savefp_frameid == NULL) {
 		char savefile_frameid[128];
@@ -455,6 +465,18 @@ vencoder_threadproc(void *arg) {
 		if(ga_conf_readv("save-frame-size-log", savefile_framesize, sizeof(savefile_framesize)) != NULL) {
 			savefp_framesize = ga_save_init_txt(savefile_framesize);
 			ga_error("SERVER: Frame size log file initialized: %s\n", savefile_framesize);
+		}
+	}
+	
+	// ⭐ FPS 로그 파일 초기화 (프로그램 시작 시 한 번만)
+	if (savefp_fps == NULL) {
+		char savefile_fps[128];
+		if(ga_conf_readv("save-fps-log", savefile_fps, sizeof(savefile_fps)) != NULL) {
+			savefp_fps = ga_save_init_txt(savefile_fps);
+			if(savefp_fps) {
+				ga_save_printf((FILE*)savefp_fps, "Timestamp, FrameCount\n");
+				ga_error("SERVER: Frame count log file initialized: %s\n", savefile_fps);
+			}
 		}
 	}
 	
@@ -729,6 +751,22 @@ vencoder_threadproc(void *arg) {
 			if(video_written == 0) {
 				video_written = 1;
 				ga_error("first video frame written (pts=%lld)\n", pic_in.i_pts);
+			}
+
+			// Frame count logging (every 1 second)
+			frame_interval_count++;
+			gettimeofday(&current_log_tv, NULL);
+			long long log_diff_us = tvdiff_us(&current_log_tv, &last_log_tv);
+			
+			if (log_diff_us >= 1000000) { // 1 second
+				if (savefp_fps != NULL) {
+					ga_save_printf((FILE*)savefp_fps, "%u.%06u, %d\n", 
+						current_log_tv.tv_sec, current_log_tv.tv_usec, frame_interval_count);
+				}
+				
+				// Reset counters
+				frame_interval_count = 0;
+				last_log_tv = current_log_tv;
 			}
 		}
 	}
