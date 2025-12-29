@@ -49,6 +49,7 @@
 #define	RTSP_STREAM_FORMAT_MAXLEN	64
 
 static struct RTSPConf *rtspconf = NULL;
+static FILE *savefp_rtt = NULL; // RTT 로그 파일 포인터 추가
 
 #ifndef NIPQUAD
 #define NIPQUAD(x)	((unsigned char*)&(x))[0],	\
@@ -1049,6 +1050,14 @@ handle_rtcp(RTSPContext *ctx, const char *buf, size_t buflen) {
 				
 				ga_error("RTCP RTT: %.3f ms (LSR=%u, DLSR=%u, Now=%u)\n", 
 					rtt_ms, lsr, dlsr, now);
+
+				// RTT 로그 파일에 기록
+				if(savefp_rtt != NULL) {
+					struct timeval tv;
+					gettimeofday(&tv, NULL);
+					ga_save_printf(savefp_rtt, "%u.%06u, %.3f, %u, %u, %u\n", 
+						tv.tv_sec, tv.tv_usec, rtt_ms, lsr, dlsr, now);
+				}
 			}
 		}
 	}
@@ -1117,6 +1126,17 @@ rtspserver(void *arg) {
 	//int iheight = video_source_maxheight(0);
 	//
 	rtspconf = rtspconf_global();
+	
+	// RTT 로그 파일 초기화
+	char savefile_rtt[128];
+	if(ga_conf_readv("save-rtt-log", savefile_rtt, sizeof(savefile_rtt)) != NULL) {
+		savefp_rtt = ga_save_init_txt(savefile_rtt);
+		if(savefp_rtt) {
+			ga_save_printf(savefp_rtt, "Timestamp, RTT(ms), LSR, DLSR, Now\n");
+			ga_error("RTSP server: RTT log file initialized: %s\n", savefile_rtt);
+		}
+	}
+
 	sinlen = sizeof(sin);
 	getpeername(s, (struct sockaddr*) &sin, &sinlen);
 	//
@@ -1305,6 +1325,13 @@ quit:
 	//ga_error("RTSP client thread terminated (%d/%d clients left).\n",
 	//	video_source_client_count(), audio_source_client_count());
 	ga_error("RTSP client thread terminated.\n");
+	
+	// RTT 로그 파일 정리
+	if(savefp_rtt != NULL) {
+		ga_save_close(savefp_rtt);
+		savefp_rtt = NULL;
+	}
+
 	//
 	return NULL;
 }
