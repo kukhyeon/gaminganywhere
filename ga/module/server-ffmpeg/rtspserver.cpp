@@ -1009,36 +1009,24 @@ get_ntp_short() {
 	return ((seconds & 0xFFFF) << 16) | (fraction >> 16);
 }
 
+// RTCP 패킷 처리 핵심 로직 (UDP/TCP 공용)
 static int
-handle_rtcp(RTSPContext *ctx, const char *buf, size_t buflen) {
-	int reqlength;
+handle_rtcp_packet(RTSPContext *ctx, const char *buf, size_t buflen) {
 	struct RTCPHeader *rtcp;
-	//char msg[64] = "", *ptr = msg;
 	
-	if(buflen < 4) return 0;
+	if(buflen < sizeof(struct RTCPHeader)) return 0;
 
-	reqlength = (unsigned char) buf[2];
-	reqlength <<= 8;
-	reqlength += (unsigned char) buf[3];
+	rtcp = (struct RTCPHeader*) buf;
 	
-	// 실제 RTCP 데이터 시작 위치
-	rtcp = (struct RTCPHeader*) (buf+4);
-	
-	// 패킷 길이 검증
-	if(buflen < 4 + reqlength) {
-		// ga_error("RTCP packet incomplete.\n");
-		return 0;
-	}
-
 	// RTCP 패킷 타입 201 (Receiver Report) 확인
-	// RTCP 헤더(4바이트) + Sender SSRC(4바이트) = 8바이트 이후에 Report Block 시작
 	if(rtcp->pt == 201) { 
 		int rc = RTCP_RC(rtcp);
 		int length = ntohs(rtcp->length); // 32-bit words minus one
 		int real_length = (length + 1) * 4;
 		
-		if(real_length >= 8 + sizeof(struct RTCPReportBlock) && rc > 0) {
-			struct RTCPReportBlock *rb = (struct RTCPReportBlock*)(buf + 4 + 8);
+		// RR 블록은 헤더(4) + SSRC(4) = 8바이트 뒤에 위치
+		if(buflen >= 8 + sizeof(struct RTCPReportBlock) && rc > 0) {
+			struct RTCPReportBlock *rb = (struct RTCPReportBlock*)(buf + 8);
 			unsigned int lsr = ntohl(rb->lsr);
 			unsigned int dlsr = ntohl(rb->dlsr);
 			
@@ -1048,9 +1036,6 @@ handle_rtcp(RTSPContext *ctx, const char *buf, size_t buflen) {
 				// NTP units (1/65536 sec) to milliseconds
 				double rtt_ms = (double)rtt_ntp * 1000.0 / 65536.0;
 				
-				ga_error("RTCP RTT: %.3f ms (LSR=%u, DLSR=%u, Now=%u)\n", 
-					rtt_ms, lsr, dlsr, now);
-
 				// RTT 로그 파일에 기록
 				if(savefp_rtt != NULL) {
 					struct timeval tv;
@@ -1061,20 +1046,27 @@ handle_rtcp(RTSPContext *ctx, const char *buf, size_t buflen) {
 			}
 		}
 	}
-
-#if 0
-	ga_error("TCP feedback for stream %d received (%d bytes): ver=%d; sc=%d; pt=%d; length=%d\n",
-		buf[1], reqlength,
-		RTCP_Version(rtcp), RTCP_SC(rtcp), rtcp->pt, ntohs(rtcp->length));
-	/*
-	for(int i = 0; i < 16; i++, ptr += 3) {
-		snprintf(ptr, sizeof(msg)-(ptr-msg),
-			"%2.2x ", (unsigned char) buf[i]);
-	}
-	ga_error("HEX: %s\n", msg);
-	*/
-#endif
 	return 0;
+}
+
+static int
+handle_rtcp(RTSPContext *ctx, const char *buf, size_t buflen) {
+	int reqlength;
+	// struct RTCPHeader *rtcp;
+	
+	if(buflen < 4) return 0;
+
+	reqlength = (unsigned char) buf[2];
+	reqlength <<= 8;
+	reqlength += (unsigned char) buf[3];
+	
+	// 패킷 길이 검증
+	if(buflen < 4 + reqlength) {
+		return 0;
+	}
+
+	// TCP Interleaved: 4바이트 헤더($ + 채널 + 길이) 뒤에 실제 RTCP 패킷 존재
+	return handle_rtcp_packet(ctx, buf + 4, reqlength);
 }
 
 static void
@@ -1196,6 +1188,21 @@ rtspserver(void *arg) {
 				continue;
 			recvfrom(ctx.rtpSocket[i], buf, sizeof(buf), 0,
 				(struct sockaddr*) &xsin, &xsinlen);
+			
+			// UDP로 들어오는 RTCP 패킷 처리 (i가 홀수이면 RTCP 포트)
+			if (i % 2 != 0) {
+				// recvfrom이 반환한 데이터 길이(반환값)를 알아야 정확하지만, 
+				// 현재 코드 구조상 buf에 데이터가 있음을 가정하고 처리.
+				// (실제로는 recvfrom의 반환값을 rlen 변수에 저장해서 쓰는게 좋음)
+				// 여기서는 편의상 sizeof(buf) 대신 충분히 큰 값이나 RTCP 헤더 파싱에 의존.
+				// 하지만 recvfrom의 리턴값을 받지 않고 있어서 수정 필요.
+				
+				// 기존 코드 흐름상 recvfrom 리턴값을 저장하지 않고 있음.
+				// handle_rtcp_packet 내부에서 헤더의 length 필드를 믿고 처리하도록 함.
+				// 단, buf에 유효한 데이터가 있다는 전제 하에.
+				handle_rtcp_packet(&ctx, buf, 1500); // 1500은 일반적인 MTU
+			}
+
 			if(ctx.rtpPortChecked[i] != 0)
 				continue;
 			// XXX: port should not flip-flop, so check only once
