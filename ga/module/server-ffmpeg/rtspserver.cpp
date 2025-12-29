@@ -1021,8 +1021,8 @@ handle_rtcp_packet(RTSPContext *ctx, const char *buf, size_t buflen) {
 	// RTCP 패킷 타입 201 (Receiver Report) 확인
 	if(rtcp->pt == 201) { 
 		int rc = RTCP_RC(rtcp);
-		int length = ntohs(rtcp->length); // 32-bit words minus one
-		int real_length = (length + 1) * 4;
+		// int length = ntohs(rtcp->length); // 32-bit words minus one
+		// int real_length = (length + 1) * 4;
 		
 		// RR 블록은 헤더(4) + SSRC(4) = 8바이트 뒤에 위치
 		if(buflen >= 8 + sizeof(struct RTCPReportBlock) && rc > 0) {
@@ -1036,12 +1036,17 @@ handle_rtcp_packet(RTSPContext *ctx, const char *buf, size_t buflen) {
 				// NTP units (1/65536 sec) to milliseconds
 				double rtt_ms = (double)rtt_ntp * 1000.0 / 65536.0;
 				
+				// 디버그 로그 출력
+				ga_error("RTT-DEBUG: RTT=%.3f ms, LSR=%u, DLSR=%u, Now=%u\n", rtt_ms, lsr, dlsr, now);
+
 				// RTT 로그 파일에 기록
 				if(savefp_rtt != NULL) {
 					struct timeval tv;
 					gettimeofday(&tv, NULL);
 					ga_save_printf(savefp_rtt, "%u.%06u, %.3f, %u, %u, %u\n", 
 						tv.tv_sec, tv.tv_usec, rtt_ms, lsr, dlsr, now);
+				} else {
+					ga_error("RTT-ERROR: Log file not opened.\n");
 				}
 			}
 		}
@@ -1121,12 +1126,18 @@ rtspserver(void *arg) {
 	
 	// RTT 로그 파일 초기화
 	char savefile_rtt[128];
+	ga_error("DEBUG: RTT 로그 초기화 시도...\n");
 	if(ga_conf_readv("save-rtt-log", savefile_rtt, sizeof(savefile_rtt)) != NULL) {
+		ga_error("DEBUG: 설정된 파일명: %s\n", savefile_rtt);
 		savefp_rtt = ga_save_init_txt(savefile_rtt);
 		if(savefp_rtt) {
 			ga_save_printf(savefp_rtt, "Timestamp, RTT(ms), LSR, DLSR, Now\n");
 			ga_error("RTSP server: RTT log file initialized: %s\n", savefile_rtt);
+		} else {
+			ga_error("ERROR: RTT 로그 파일 열기 실패: %s\n", savefile_rtt);
 		}
+	} else {
+		ga_error("DEBUG: save-rtt-log 설정이 없습니다.\n");
 	}
 
 	sinlen = sizeof(sin);
@@ -1186,21 +1197,15 @@ rtspserver(void *arg) {
 #endif
 			if(FD_ISSET(ctx.rtpSocket[i], &rfds) == 0)
 				continue;
-			recvfrom(ctx.rtpSocket[i], buf, sizeof(buf), 0,
+			int recv_len = recvfrom(ctx.rtpSocket[i], buf, sizeof(buf), 0,
 				(struct sockaddr*) &xsin, &xsinlen);
 			
 			// UDP로 들어오는 RTCP 패킷 처리 (i가 홀수이면 RTCP 포트)
 			if (i % 2 != 0) {
-				// recvfrom이 반환한 데이터 길이(반환값)를 알아야 정확하지만, 
-				// 현재 코드 구조상 buf에 데이터가 있음을 가정하고 처리.
-				// (실제로는 recvfrom의 반환값을 rlen 변수에 저장해서 쓰는게 좋음)
-				// 여기서는 편의상 sizeof(buf) 대신 충분히 큰 값이나 RTCP 헤더 파싱에 의존.
-				// 하지만 recvfrom의 리턴값을 받지 않고 있어서 수정 필요.
-				
-				// 기존 코드 흐름상 recvfrom 리턴값을 저장하지 않고 있음.
-				// handle_rtcp_packet 내부에서 헤더의 length 필드를 믿고 처리하도록 함.
-				// 단, buf에 유효한 데이터가 있다는 전제 하에.
-				handle_rtcp_packet(&ctx, buf, 1500); // 1500은 일반적인 MTU
+				if (recv_len > 0) {
+					// ga_error("DEBUG: UDP Packet on port %d, len=%d\n", i, recv_len);
+					handle_rtcp_packet(&ctx, buf, recv_len);
+				}
 			}
 
 			if(ctx.rtpPortChecked[i] != 0)
