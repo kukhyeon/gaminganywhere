@@ -794,11 +794,13 @@ static struct sockaddr_in rtt_client_addr;
 static int rtt_client_known = 0;
 static FILE *savefp_rtt = NULL;
 
+#pragma pack(push, 1)
 typedef struct {
 	uint32_t seq;
 	uint32_t sec;
 	uint32_t usec;
 } rtt_packet_t;
+#pragma pack(pop)
 
 static void *
 rtt_server_threadproc(void *arg) {

@@ -64,11 +64,13 @@ static int feedback_client_sock = -1;
 static struct sockaddr_in feedback_server_addr;
 
 // --- RTT Client (Port 55556) ---
+#pragma pack(push, 1)
 typedef struct {
 	uint32_t seq;
 	uint32_t sec;
 	uint32_t usec;
 } rtt_packet_t;
+#pragma pack(pop)
 
 static int rtt_client_sock = -1;
 static pthread_t rtt_client_tid = 0;
@@ -115,12 +117,20 @@ rtt_echo_threadproc(void *arg) {
 	inet_aton(server_ip, &si_server.sin_addr);
 #endif
 
-	// Send Hello
+	// Send Hello periodically
 	rtt_packet_t hello = {0,0,0};
-	sendto(s, (const char*)&hello, sizeof(hello), 0, (struct sockaddr*)&si_server, sizeof(si_server));
+	struct timeval last_hello = {0,0}, now;
+
 	rtsperror("RTT client: started, pinging %s:55556\n", server_ip);
 
 	while(rtt_client_running) {
+		// 1. Send Hello every 2 seconds (Keep-alive & Initial handshake)
+		gettimeofday(&now, NULL);
+		if (tvdiff_us(&now, &last_hello) > 2000000) {
+			sendto(s, (const char*)&hello, sizeof(hello), 0, (struct sockaddr*)&si_server, sizeof(si_server));
+			last_hello = now;
+		}
+
 #ifdef WIN32
 		int slen = sizeof(si_server);
 #else
@@ -129,6 +139,7 @@ rtt_echo_threadproc(void *arg) {
 		struct sockaddr_in si_in;
 		int len = recvfrom(s, (char*)&pkt, sizeof(pkt), 0, (struct sockaddr*)&si_in, &slen);
 		if(len > 0) {
+			// Echo back
 			sendto(s, (const char*)&pkt, len, 0, (struct sockaddr*)&si_in, sizeof(si_in));
 		}
 	}
