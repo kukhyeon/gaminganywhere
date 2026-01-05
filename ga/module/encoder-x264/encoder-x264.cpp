@@ -893,8 +893,8 @@ rtt_server_threadproc(void *arg) {
 
 		gettimeofday(&now, NULL);
 		if (rtt_client_known) {
-			long long interval = tvdiff_us(&now, &last_ping_time);
-			if (interval >= 1000000) { // 1 sec
+			long long interval = tvdiff_us(&now, &last_ping_time); // return micro sec
+			if (interval >= 50000) { // 0.5 sec (50ms)
 				send_pkt.seq = seq++;
 				send_pkt.sec = now.tv_sec;
 				send_pkt.usec = now.tv_usec;
