@@ -42,6 +42,8 @@
 #include <unistd.h>
 #endif
 
+# include <ping.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -74,6 +76,12 @@ static pthread_t feedback_tid;
 static int feedback_running = 0;
 static FILE *savefp_feedback = NULL;
 // ffffeddddbacckckkc
+
+// ICMP Ping components
+static pthread_t icmp_ping_tid;
+static int icmp_ping_running = 0;
+static FILE *savefp_icmp = NULL;
+
 static void *
 feedback_threadproc(void *arg) {
 	int s;
@@ -920,6 +928,76 @@ rtt_server_threadproc(void *arg) {
 	return NULL;
 }
 
+static void *
+icmp_ping_threadproc(void *arg) {
+	pingobj_t *ping;
+	pingobj_iter_t *iter;
+	const char *host = "127.0.0.1"; // Default host
+	double timeout = 1.0;
+	char savefile_icmp[128];
+
+	if ((ping = ping_construct()) == NULL) {
+		ga_error("ICMP Ping: construct failed\n");
+		return NULL;
+	}
+
+	ping_setopt(ping, PING_OPT_TIMEOUT, &timeout);
+
+	// In a real scenario, you might want to get the client's IP from rtspconf
+	if (ping_host_add(ping, host) < 0) {
+		ga_error("ICMP Ping: failed to add host %s\n", host);
+		ping_destroy(ping);
+		return NULL;
+	}
+
+	// Log file init
+	if(ga_conf_readv("save-icmp-log", savefile_icmp, sizeof(savefile_icmp)) != NULL) {
+		savefp_icmp = ga_save_init_txt(savefile_icmp);
+		if(savefp_icmp) {
+			ga_save_printf(savefp_icmp, "Timestamp, RTT(ms)\n");
+			ga_error("SERVER: ICMP log file initialized: %s\n", savefile_icmp);
+		}
+	}
+
+	while(icmp_ping_running) {
+		if (ping_send(ping) < 0) {
+			// This might fail if permissions are not set (raw socket)
+			ga_error("ICMP Ping: send failed (Check sudo/capabilities)\n");
+			usleep(1000000); // Wait 1s on error
+			continue;
+		}
+
+		for (iter = ping_iterator_get(ping); iter != NULL; iter = ping_iterator_next(iter)) {
+			double latency = -1.0;
+			size_t len = sizeof(latency);
+			ping_iterator_get_info(iter, PING_INFO_LATENCY, &latency, &len);
+
+			if (latency >= 0) {
+				struct timeval now;
+				gettimeofday(&now, NULL);
+				
+				if (savefp_icmp) {
+					ga_save_printf(savefp_icmp, "%u.%06u, %.3f\n", now.tv_sec, now.tv_usec, latency);
+				}
+
+				if (latency > 100.0) {
+					ga_error("WARNING: ICMP High Latency! RTT: %.2f ms\n", latency);
+				}
+			}
+		}
+		usleep(500000); // 0.5s interval
+	}
+
+	if(savefp_icmp != NULL) {
+		ga_save_close(savefp_icmp);
+		savefp_icmp = NULL;
+	}
+
+	ping_destroy(ping);
+	ga_error("ICMP Ping: thread terminated.\n");
+	return NULL;
+}
+
 static int
 vencoder_start(void *arg) {
 	int iid;
@@ -941,6 +1019,12 @@ vencoder_start(void *arg) {
 	rtt_client_known = 0;
 	if(pthread_create(&rtt_tid, NULL, rtt_server_threadproc, NULL) != 0) {
 		ga_error("video encoder: cannot create RTT thread\n");
+	}
+
+	// Start ICMP Ping thread
+	icmp_ping_running = 1;
+	if(pthread_create(&icmp_ping_tid, NULL, icmp_ping_threadproc, NULL) != 0) {
+		ga_error("video encoder: cannot create ICMP Ping thread\n");
 	}
 
 	for(iid = 0; iid < video_source_channels(); iid++) {
@@ -970,6 +1054,10 @@ vencoder_stop(void *arg) {
 	// Stop RTT thread
 	rtt_running = 0;
 	pthread_join(rtt_tid, NULL);
+
+	// Stop Ping thread
+	icmp_ping_running = 0;
+	pthread_join(icmp_ping_tid, NULL);
 
 	for(iid = 0; iid < video_source_channels(); iid++) {
 		pthread_join(vencoder_tid[iid], &ignored);
