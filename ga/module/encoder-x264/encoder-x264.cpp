@@ -42,7 +42,7 @@
 #include <unistd.h>
 #endif
 
-# include <ping.h>
+# include <oping.h>
 
 #ifdef __cplusplus
 extern "C" {

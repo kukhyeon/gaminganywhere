@@ -2,7 +2,7 @@
 include ../Makefile.common
 
 CFLAGS	+= $(shell pkg-config --cflags x264)
-LDFLAGS	+= $(shell pkg-config --libs x264) -lping
+LDFLAGS	+= $(shell pkg-config --libs x264) -loping
 
 OBJS	= encoder-x264.o
 TARGET	= encoder-x264.$(EXT)
