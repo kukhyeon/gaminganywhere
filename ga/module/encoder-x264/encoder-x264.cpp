@@ -1002,6 +1002,7 @@ static int
 vencoder_start(void *arg) {
 	int iid;
 	char *pipefmt = (char*) arg;
+	char tmpbuf[16];
 #define	MAXPARAMLEN	64
 	static char pipename[VIDEO_SOURCE_CHANNEL_MAX][MAXPARAMLEN];
 	if(vencoder_started != 0)
@@ -1014,17 +1015,25 @@ vencoder_start(void *arg) {
 		ga_error("video encoder: cannot create feedback thread\n");
 	}
 
-	// Start RTT thread
-	rtt_running = 1;
-	rtt_client_known = 0;
-	if(pthread_create(&rtt_tid, NULL, rtt_server_threadproc, NULL) != 0) {
-		ga_error("video encoder: cannot create RTT thread\n");
+	// Start RTT thread (UDP) - Logic-based Activation
+	rtt_running = 0;
+	if (ga_conf_readv("enable-udp-rtt", tmpbuf, sizeof(tmpbuf)) != NULL && atoi(tmpbuf) != 0) {
+		rtt_running = 1;
+		rtt_client_known = 0;
+		if(pthread_create(&rtt_tid, NULL, rtt_server_threadproc, NULL) != 0) {
+			rtt_running = 0;
+			ga_error("video encoder: cannot create RTT thread\n");
+		}
 	}
 
-	// Start ICMP Ping thread
-	icmp_ping_running = 1;
-	if(pthread_create(&icmp_ping_tid, NULL, icmp_ping_threadproc, NULL) != 0) {
-		ga_error("video encoder: cannot create ICMP Ping thread\n");
+	// Start ICMP Ping thread - Logic-based Activation
+	icmp_ping_running = 0;
+	if (ga_conf_readv("enable-icmp-ping", tmpbuf, sizeof(tmpbuf)) != NULL && atoi(tmpbuf) != 0) {
+		icmp_ping_running = 1;
+		if(pthread_create(&icmp_ping_tid, NULL, icmp_ping_threadproc, NULL) != 0) {
+			icmp_ping_running = 0;
+			ga_error("video encoder: cannot create ICMP Ping thread\n");
+		}
 	}
 
 	for(iid = 0; iid < video_source_channels(); iid++) {
@@ -1051,13 +1060,17 @@ vencoder_stop(void *arg) {
 	feedback_running = 0;
 	pthread_join(feedback_tid, NULL);
 
-	// Stop RTT thread
-	rtt_running = 0;
-	pthread_join(rtt_tid, NULL);
+	// Stop RTT thread (UDP)
+	if (rtt_running) {
+		rtt_running = 0;
+		pthread_join(rtt_tid, NULL);
+	}
 
-	// Stop Ping thread
-	icmp_ping_running = 0;
-	pthread_join(icmp_ping_tid, NULL);
+	// Stop ICMP Ping thread
+	if (icmp_ping_running) {
+		icmp_ping_running = 0;
+		pthread_join(icmp_ping_tid, NULL);
+	}
 
 	for(iid = 0; iid < video_source_channels(); iid++) {
 		pthread_join(vencoder_tid[iid], &ignored);
