@@ -985,7 +985,7 @@ icmp_ping_threadproc(void *arg) {
 				}
 			}
 		}
-		usleep(500000); // 0.5s interval
+		usleep(100000); // 0.1s interval
 	}
 
 	if(savefp_icmp != NULL) {
