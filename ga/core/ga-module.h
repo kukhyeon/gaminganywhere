@@ -54,7 +54,8 @@ enum ga_ioctl_commands {
 	GA_IOCTL_RECONFIGURE,		/**< Reconfiguration */
 	GA_IOCTL_GETSPS = 0x100,	/**< Get SPS: for H.264 and H.265 */
 	GA_IOCTL_GETPPS,		/**< Get PPS: for H.264 and H.265 */
-	GA_IOCTL_GETVPS			/**< Get VPS: for H.265 */
+	GA_IOCTL_GETVPS,		/**< Get VPS: for H.265 */
+	GA_IOCTL_GET_NETWORK_STATUS	/**< Get network status (RTT, etc.) */
 };
 
 /**
@@ -93,6 +94,14 @@ typedef struct ga_ioctl_reconfigure_s {
 	int bitrateKbps;	/**< bitrate in Kbit-per-second. Affects both bitrate and vbv-maxrate */
 	int bufsize;		/**< vbv-bufsize */
 }	ga_ioctl_reconfigure_t;
+
+/**
+ * Parameter for ioctl()'s GET_NETWORK_STATUS command.
+ */
+typedef struct ga_ioctl_network_status_s {
+	double udp_rtt_ms;
+	double icmp_rtt_ms;
+}	ga_ioctl_network_status_t;
 
 #ifdef __cplusplus
 extern "C" {

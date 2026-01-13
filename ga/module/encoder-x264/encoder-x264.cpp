@@ -82,6 +82,19 @@ static pthread_t icmp_ping_tid;
 static int icmp_ping_running = 0;
 static FILE *savefp_icmp = NULL;
 
+// ABR (Adaptive Bitrate) Components
+static double current_udp_rtt = 0.0;   // ms
+static double current_icmp_rtt = 0.0;  // ms
+static pthread_mutex_t rtt_data_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int abr_enabled = 0;
+
+typedef struct ga_abr_config_s {
+	int bitrateKbps;
+	int bufsize;
+	int framerate_n;
+	int framerate_d;
+} ga_abr_config_t;
+
 static void *
 feedback_threadproc(void *arg) {
 	int s;
@@ -150,6 +163,11 @@ feedback_threadproc(void *arg) {
 				if (diff_us > 100000) { // 100ms
 					ga_error("WARNING: Congestion Detected! RTT: %lld ms (Frame #%u)\n", diff_us/1000, recv_frame_id);
 				}
+
+				// ABR 데이터 업데이트
+				pthread_mutex_lock(&rtt_data_mutex);
+				current_udp_rtt = diff_us / 1000.0;
+				pthread_mutex_unlock(&rtt_data_mutex);
 				
 				// Save to log file
 				if(savefp_feedback != NULL) {
@@ -381,18 +399,31 @@ init_failed:
 	return -1;
 }
 
+/**
+ * @brief 사용자 정의 ABR 알고리즘 함수
+ * @return 1: 설정 변경 필요, 0: 유지
+ */
+static int
+vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_params) {
+	// TODO: 여기에 지연 시간에 따른 비트레이트 조절 알고리즘을 구현하세요.
+	// 예: if(udp_rtt > 150) out_params->bitrateKbps = 2000;
+	
+	// 현재는 동작하지 않는 뼈대만 반환합니다.
+	return 0;
+}
+
 static int
 vencoder_reconfigure(int iid) {
 	int ret = 0;
 	x264_param_t params;
 	x264_t *encoder = vencoder[iid];
 	ga_ioctl_reconfigure_t *reconf = &vencoder_reconf[iid];
-	//
+	int doit = 0;
+
+	// 수동(ioctl) Reconfigure 처리
 	pthread_mutex_lock(&vencoder_reconf_mutex[iid]);
 	if(vencoder_reconf[iid].id >= 0) {
-		int doit = 0;
 		x264_encoder_parameters(encoder, &params);
-		//
 		if(reconf->crf > 0) {
 			params.rc.f_rf_constant = 1.0 * reconf->crf;
 			doit++;
@@ -983,6 +1014,11 @@ icmp_ping_threadproc(void *arg) {
 				if (latency > 100.0) {
 					ga_error("WARNING: ICMP High Latency! RTT: %.2f ms\n", latency);
 				}
+
+				// ABR 데이터 업데이트
+				pthread_mutex_lock(&rtt_data_mutex);
+				current_icmp_rtt = latency;
+				pthread_mutex_unlock(&rtt_data_mutex);
 			}
 		}
 		usleep(100000); // 0.1s interval
@@ -1183,6 +1219,17 @@ vencoder_ioctl(int command, int argsize, void *arg) {
 			return GA_IOCTL_ERR_BUFFERSIZE;
 		buf->size = _ppslen[buf->id];
 		bcopy(_pps[buf->id], buf->ptr, buf->size);
+		break;
+	case GA_IOCTL_GET_NETWORK_STATUS:
+		if(argsize != sizeof(ga_ioctl_network_status_t))
+			return GA_IOCTL_ERR_INVALID_ARGUMENT;
+		{
+			ga_ioctl_network_status_t *net_stat = (ga_ioctl_network_status_t*) arg;
+			pthread_mutex_lock(&rtt_data_mutex);
+			net_stat->udp_rtt_ms = current_udp_rtt;
+			net_stat->icmp_rtt_ms = current_icmp_rtt;
+			pthread_mutex_unlock(&rtt_data_mutex);
+		}
 		break;
 	default:
 		ret = GA_IOCTL_ERR_NOTSUPPORTED;

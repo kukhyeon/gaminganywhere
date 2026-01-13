@@ -189,6 +189,84 @@ test_reconfig(void *) {
 }
 // #endif removed
 
+typedef struct ga_abr_config_s {
+	int bitrateKbps;
+	int bufsize;
+	int framerate_n;
+	int framerate_d;
+} ga_abr_config_t;
+
+/**
+ * @brief 사용자 정의 ABR 알고리즘 함수 (서버 측)
+ * @return 1: 설정 변경 필요, 0: 유지
+ */
+static int
+vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_params) {
+	// TODO: 여기에 지연 시간에 따른 비트레이트 및 FPS 조절 알고리즘을 구현하세요.
+	// 예: if(udp_rtt > 150) { 
+	//        out_params->bitrateKbps = 2000;
+	//        out_params->framerate_n = 15;
+	//     }
+	
+	// 현재는 동작하지 않는 뼈대만 반환합니다.
+	return 0;
+}
+
+static void *
+abr_controller_thread(void *arg) {
+	ga_error("ABR controller thread started ...\n");
+	while (1) {
+		ga_ioctl_network_status_t net_stat;
+		ga_abr_config_t abr_conf;
+		ga_ioctl_reconfigure_t reconf;
+		int err;
+
+		if (encoder_running() == 0) {
+			sleep(1);
+			continue;
+		}
+
+		// 1. 인코더로부터 최신 네트워크 상태(RTT) 가져오기
+		if (m_vencoder->ioctl) {
+			err = m_vencoder->ioctl(GA_IOCTL_GET_NETWORK_STATUS, sizeof(net_stat), &net_stat);
+			if (err < 0) {
+				ga_error("ABR: failed to get network status, err = %d\n", err);
+				sleep(1);
+				continue;
+			}
+		}
+
+		// 2. 알고리즘 실행
+		bzero(&abr_conf, sizeof(abr_conf));
+		if (vencoder_abr_algorithm(net_stat.udp_rtt_ms, net_stat.icmp_rtt_ms, &abr_conf)) {
+			// 3. 변경 사항이 있다면 vsource와 vencoder 모두에게 명령 하달
+			bzero(&reconf, sizeof(reconf));
+			reconf.id = 0;
+			reconf.bitrateKbps = abr_conf.bitrateKbps;
+			reconf.bufsize = abr_conf.bufsize;
+			reconf.framerate_n = abr_conf.framerate_n;
+			reconf.framerate_d = abr_conf.framerate_d;
+
+			// vsource (Capture FPS)
+			if (reconf.framerate_n > 0 && m_vsource->ioctl) {
+				m_vsource->ioctl(GA_IOCTL_RECONFIGURE, sizeof(reconf), &reconf);
+			}
+
+			// vencoder (Bitrate & Encoding FPS)
+			if (m_vencoder->ioctl) {
+				m_vencoder->ioctl(GA_IOCTL_RECONFIGURE, sizeof(reconf), &reconf);
+			}
+			
+			ga_error("ABR: System reconfigured (RTT: UDP=%.2f, ICMP=%.2f) -> Bitrate=%d, FPS=%d/%d\n",
+				net_stat.udp_rtt_ms, net_stat.icmp_rtt_ms,
+				reconf.bitrateKbps, reconf.framerate_n, reconf.framerate_d);
+		}
+
+		usleep(1000000); // 1초 주기로 체크 (조절 가능)
+	}
+	return NULL;
+}
+
 int
 main(int argc, char *argv[]) {
 	int notRunning = 0;
@@ -231,6 +309,12 @@ main(int argc, char *argv[]) {
 		pthread_t t;
 		pthread_create(&t, NULL, test_reconfig, NULL);
 		ga_error("TEST: Dynamic reconfiguration enabled (via config).\n");
+	}
+	//
+	if (ga_conf_readbool("enable-abr", 0) != 0) {
+		pthread_t t;
+		pthread_create(&t, NULL, abr_controller_thread, NULL);
+		ga_error("ABR: Adaptive Bitrate controller enabled (via config).\n");
 	}
 	//
 	//rtspserver_main(NULL);
