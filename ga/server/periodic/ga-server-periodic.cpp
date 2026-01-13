@@ -29,7 +29,7 @@
 #include "controller.h"
 #include "encoder-common.h"
 
-//#define	TEST_RECONFIGURE
+////#define	TEST_RECONFIGURE
 
 // image source pipeline:
 //	vsource -- [vsource-%d] --> filter -- [filter-%d] --> encoder
@@ -132,7 +132,7 @@ run_modules() {
 	return 0;
 }
 
-#ifdef TEST_RECONFIGURE
+// #ifdef TEST_RECONFIGURE removed for runtime control
 static void *
 test_reconfig(void *) {
 	int s = 0, err;
@@ -187,7 +187,7 @@ test_reconfig(void *) {
 	}
 	return NULL;
 }
-#endif
+// #endif removed
 
 int
 main(int argc, char *argv[]) {
@@ -226,10 +226,13 @@ main(int argc, char *argv[]) {
 	if(load_modules() < 0)	 	{ return -1; }
 	if(init_modules() < 0)	 	{ return -1; }
 	if(run_modules() < 0)	 	{ return -1; }
-#ifdef TEST_RECONFIGURE
-	pthread_t t;
-	pthread_create(&t, NULL, test_reconfig, NULL);
-#endif
+	//
+	if (ga_conf_readbool("enable-reconfigure", 0) != 0) {
+		pthread_t t;
+		pthread_create(&t, NULL, test_reconfig, NULL);
+		ga_error("TEST: Dynamic reconfiguration enabled (via config).\n");
+	}
+	//
 	//rtspserver_main(NULL);
 	//liveserver_main(NULL);
 	while(1) {
