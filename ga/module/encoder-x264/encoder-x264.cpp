@@ -399,19 +399,6 @@ init_failed:
 	return -1;
 }
 
-/**
- * @brief 사용자 정의 ABR 알고리즘 함수
- * @return 1: 설정 변경 필요, 0: 유지
- */
-static int
-vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_params) {
-	// TODO: 여기에 지연 시간에 따른 비트레이트 조절 알고리즘을 구현하세요.
-	// 예: if(udp_rtt > 150) out_params->bitrateKbps = 2000;
-	
-	// 현재는 동작하지 않는 뼈대만 반환합니다.
-	return 0;
-}
-
 static int
 vencoder_reconfigure(int iid) {
 	int ret = 0;
