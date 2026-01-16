@@ -45,8 +45,10 @@ static void *audio_encoder_param = NULL;
 
 static struct gaRect *prect = NULL;
 static struct gaRect rect;
-
 static ga_module_t *m_vsource, *m_filter, *m_vencoder, *m_asource, *m_aencoder, *m_ctrl, *m_server;
+
+static int g_current_bitrate = 0;
+static int g_current_fps = 0;
 
 int
 load_modules() {
@@ -200,21 +202,80 @@ typedef struct ga_abr_config_s {
  * @brief 사용자 정의 ABR 알고리즘 함수 (서버 측)
  * @return 1: 설정 변경 필요, 0: 유지
  */
+
+int
+calculate_new_bitrate(long long diff, int current_bitrate){
+	int new_bitrate;
+	// 지연 차이가 크면 급격히 감소, 작으면 완만하게 증가
+	if (diff > 50) { // 50ms 초과
+		new_bitrate = (int)(current_bitrate * 0.85); // 15% 감소 
+	} else {
+		new_bitrate = current_bitrate + 100; // 100Kbps씩 증가
+	}
+
+	if (new_bitrate < 500) return 500;
+	if (new_bitrate > 8000) return 8000;
+	return new_bitrate;
+}
+
+int
+calculate_new_fps(long long diff, int current_fps){
+	// 일단 보류
+	/*
+    if (diff > 50) {
+        int next_fps = current_fps - 3;
+        return (next_fps < 15) ? 15 : next_fps; // 최소 15fps
+    } else {
+        int next_fps = current_fps + 1;
+        return (next_fps > 60) ? 60 : next_fps; // 최대 60fps로 제한 (120 점프 방지)
+    }
+	*/
+	int next_fps = 60;
+	return next_fps;
+}
+
 static int
 vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_params) {
-	// TODO: 여기에 지연 시간에 따른 비트레이트 및 FPS 조절 알고리즘을 구현하세요.
-	// 예: if(udp_rtt > 150) { 
-	//        out_params->bitrateKbps = 2000;
-	//        out_params->framerate_n = 15;
-	//     }
-	
-	// 현재는 동작하지 않는 뼈대만 반환합니다.
-	return 0;
+    // RTT 차이 계산 (ms 단위 가정)
+    long long diff = (long long)(udp_rtt - icmp_rtt);
+    
+    // 이전 값을 바탕으로 새 값 계산 및 전역 변수 업데이트
+    g_current_bitrate = calculate_new_bitrate(diff, g_current_bitrate);
+    g_current_fps = calculate_new_fps(diff, g_current_fps);
+
+    // 출력 파라미터 설정
+    out_params->bitrateKbps = g_current_bitrate;
+    out_params->framerate_n = g_current_fps;
+    out_params->framerate_d = 1;
+    
+    // 버퍼 사이즈 설정: 비트레이트의 절반(0.5초 분량)으로 설정하여 안정성 확보
+    out_params->bufsize = g_current_bitrate / 2; 
+
+    ga_error("ABR: Update - Diff:%lldms, Bitrate:%dKbps, FPS:%d, Buf:%d\n", 
+             diff, g_current_bitrate, g_current_fps, out_params->bufsize);
+
+    return 1; // 설정이 변경되었음을 알림
 }
 
 static void *
 abr_controller_thread(void *arg) {
 	ga_error("ABR controller thread started ...\n");
+
+	// --- 초기값 읽기 로직 추가 ---
+	if (g_current_fps == 0) {
+		// video-x264.conf 의 video-fps 값 읽기 (기본값 30)
+		g_current_fps = ga_conf_readint("video-fps");
+		if (g_current_fps == 0) g_current_fps = 30;
+	}
+	if (g_current_bitrate == 0) {
+		// video-x264-param.conf 의 video-specific[b] 값 읽기
+		// 설정 파일에는 bps 단위(예: 3000000)로 되어 있으므로 Kbps로 변환 (/1000)
+		g_current_bitrate = ga_conf_mapreadint("video-specific", "b") / 1000;
+		if (g_current_bitrate == 0) g_current_bitrate = 3000;
+	}
+	ga_error("ABR: Initialized with Bitrate:%dKbps, FPS:%d\n", g_current_bitrate, g_current_fps);
+	// --------------------------
+	
 	while (1) {
 		ga_ioctl_network_status_t net_stat;
 		ga_abr_config_t abr_conf;
