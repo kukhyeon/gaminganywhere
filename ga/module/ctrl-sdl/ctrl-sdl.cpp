@@ -605,7 +605,7 @@
 					(int) (prect->top + scaleFactorY * msgm->mousey), CurrentTime);
 				}
 		} else {
-			XtestFakeRelativeMotionEvent(display,
+			XTestFakeRelativeMotionEvent(display,
 				(int) (scaleFactorX * (short)msgm->mouseRelX),
 				(int) (scaleFactorY * (short)msgm->mouseRelY),
 				CurrentTime);
