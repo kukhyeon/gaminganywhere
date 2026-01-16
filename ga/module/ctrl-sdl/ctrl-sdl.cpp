@@ -594,15 +594,23 @@
 	 	case SDL_EVENT_MSGTYPE_MOUSEMOTION:
 		//ga_error("sdl replayer: motion event x=%u y=%d\n", msg->mousex, msg->mousey);
 		XTestGrabControl(display, True);
-		if(prect == NULL) {
-			XTestFakeMotionEvent(display, screenNumber,
-				(int) (scaleFactorX * msgm->mousex),
-				(int) (scaleFactorY * msgm->mousey), CurrentTime);
+		if (msgm->relativeMouseMode == 0){
+			if(prect == NULL) {
+				XTestFakeMotionEvent(display, screenNumber,
+					(int) (scaleFactorX * msgm->mousex),
+					(int) (scaleFactorY * msgm->mousey), CurrentTime);
+			} else {
+				XTestFakeMotionEvent(display, screenNumber,
+					(int) (prect->left + scaleFactorX * msgm->mousex),
+					(int) (prect->top + scaleFactorY * msgm->mousey), CurrentTime);
+				}
 		} else {
-			XTestFakeMotionEvent(display, screenNumber,
-				(int) (prect->left + scaleFactorX * msgm->mousex),
-				(int) (prect->top + scaleFactorY * msgm->mousey), CurrentTime);
-		}
+			XtestFakeRelativeMotionEvent(display,
+				(int) (scaleFactorX * (short)msgm->mouseRelX),
+				(int) (scaleFactorY * (short)msgm->mouseRelY),
+				CurrentTime);
+			}
+		} 
 		XSync(display, True);
 		XTestGrabControl(display, False);
 		break;
