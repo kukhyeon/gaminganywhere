@@ -49,7 +49,7 @@ static ga_module_t *m_vsource, *m_filter, *m_vencoder, *m_asource, *m_aencoder, 
 
 static int g_current_bitrate = 0;
 static int g_current_fps = 0;
-static FILE *save_fp_abr = NULL;
+static FILE *savefp_abr = NULL;
 static int abr_log_seq = 0;
 
 int
