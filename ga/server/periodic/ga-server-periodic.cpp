@@ -49,6 +49,8 @@ static ga_module_t *m_vsource, *m_filter, *m_vencoder, *m_asource, *m_aencoder, 
 
 static int g_current_bitrate = 0;
 static int g_current_fps = 0;
+static FILE *save_fp_abr = NULL;
+static int abr_log_seq = 0;
 
 int
 load_modules() {
@@ -207,13 +209,18 @@ int
 calculate_new_bitrate(long long diff, int current_bitrate){
 	int new_bitrate;
 	// 지연 차이가 크면 급격히 감소, 작으면 완만하게 증가
-	if (diff > 50) { // 50ms 초과
+	if (diff > 100) { // 50ms 초과
 		new_bitrate = (int)(current_bitrate * 0.85); // 15% 감소 
 	} else {
-		// 네트워크 양호: diff가 작을수록(지연 차이가 적을수록) 대역폭에 여유가 있다고 판단
-		// diff가 0에 가까울수록 최대 300Kbps, 50에 가까울수록 최소 50Kbps 증가
-		int increase_amount = 300 - (int)(diff * 5.0); 
-		if (increase_amount < 50) increase_amount = 50; // 최소 증가량 보장
+		// 네트워크 지연(diff)이 적을수록(좋을수록) 더 과감하게 비트레이트를 올립니다.
+		// diff = 0ms 일 때 +1000 Kbps (최대 증가폭)
+		// diff = 50ms 일 때 +0 Kbps (증가 없음)
+		// 공식: 1000 - (diff * 20)
+		int increase_amount = 1000 - (int)(diff * 10.0); 
+		
+		// 음수 방지 및 최대치 제한 (0 ~ 1000Kbps)
+		if (increase_amount < 0) increase_amount = 0;
+		if (increase_amount > 1000) increase_amount = 1000;
 		
 		new_bitrate = current_bitrate + increase_amount;
 	}
@@ -256,6 +263,18 @@ vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_par
     // 버퍼 사이즈 설정: 비트레이트의 절반(0.5초 분량)으로 설정하여 안정성 확보
     out_params->bufsize = g_current_bitrate / 2; 
 
+	// --- CSV 파일에 기록 ---
+	if (savefp_abr != NULL) {
+		struct timeval now;
+		gettimeofday(&now, NULL);
+		ga_save_printf(savefp_abr, "%d,%u.%06u,%d,%d,%lld\n", 
+					abr_log_seq++, now.tv_sec, now.tv_usec, 
+					g_current_bitrate, g_current_fps, diff);
+	}
+
+	ga_error("ABR: Update - Seq:%d, Bitrate:%dKbps, FPS:%d\n", 
+			abr_log_seq-1, g_current_bitrate, g_current_fps);
+
     ga_error("ABR: Update - Diff:%lldms, Bitrate:%dKbps, FPS:%d, Buf:%d\n", 
              diff, g_current_bitrate, g_current_fps, out_params->bufsize);
 
@@ -265,6 +284,16 @@ vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_par
 static void *
 abr_controller_thread(void *arg) {
 	ga_error("ABR controller thread started ...\n");
+
+	if (savefp_abr == NULL) {
+		char savefile_abr[128] = "abr_log.csv"; // 기본 파일명
+		// 설정 파일에서 경로를 읽어오고 싶다면 ga_conf_readv 활용 가능
+		savefp_abr = ga_save_init_txt(savefile_abr);
+		if (savefp_abr) {
+			ga_save_printf(savefp_abr, "Seq,Timestamp,Bitrate(Kbps),FPS,Diff(ms)\n");
+			ga_error("SERVER: ABR log file initialized: %s\n", savefile_abr);
+		}
+	}
 
 	// --- 초기값 읽기 로직 추가 ---
 	if (g_current_fps == 0) {
