@@ -286,12 +286,17 @@ abr_controller_thread(void *arg) {
 	ga_error("ABR controller thread started ...\n");
 
 	if (savefp_abr == NULL) {
-		char savefile_abr[128] = "abr_log.csv"; // 기본 파일명
-		// 설정 파일에서 경로를 읽어오고 싶다면 ga_conf_readv 활용 가능
-		savefp_abr = ga_save_init_txt(savefile_abr);
-		if (savefp_abr) {
-			ga_save_printf(savefp_abr, "Seq,Timestamp,Bitrate(Kbps),FPS,Diff(ms)\n");
-			ga_error("SERVER: ABR log file initialized: %s\n", savefile_abr);
+		char savefile_abr[128];
+		// 하드코딩 대신 설정 파일(save-abr-log)에서 경로를 읽어오도록 수정
+		if (ga_conf_readv("save-abr-log", savefile_abr, sizeof(savefile_abr)) != NULL) {
+			savefp_abr = ga_save_init_txt(savefile_abr);
+			if (savefp_abr) {
+				ga_save_printf(savefp_abr, "Seq,Timestamp,Bitrate(Kbps),FPS,Diff(ms)\n");
+				ga_error("SERVER: ABR log file initialized: %s\n", savefile_abr);
+			}
+		} else {
+			// 설정값이 없을 때만 기본값 사용
+			savefp_abr = ga_save_init_txt("abr_log.csv");
 		}
 	}
 
