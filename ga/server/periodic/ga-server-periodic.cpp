@@ -210,7 +210,12 @@ calculate_new_bitrate(long long diff, int current_bitrate){
 	if (diff > 50) { // 50ms 초과
 		new_bitrate = (int)(current_bitrate * 0.85); // 15% 감소 
 	} else {
-		new_bitrate = current_bitrate + 100; // 100Kbps씩 증가
+		// 네트워크 양호: diff가 작을수록(지연 차이가 적을수록) 대역폭에 여유가 있다고 판단
+		// diff가 0에 가까울수록 최대 300Kbps, 50에 가까울수록 최소 50Kbps 증가
+		int increase_amount = 300 - (int)(diff * 5.0); 
+		if (increase_amount < 50) increase_amount = 50; // 최소 증가량 보장
+		
+		new_bitrate = current_bitrate + increase_amount;
 	}
 
 	if (new_bitrate < 500) return 500;

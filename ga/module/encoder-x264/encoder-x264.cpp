@@ -950,7 +950,7 @@ static void *
 icmp_ping_threadproc(void *arg) {
 	pingobj_t *ping;
 	pingobj_iter_t *iter;
-	const char *host = "127.0.0.1"; // Default host
+	const char *host = "client IP"; // Default host
 	double timeout = 1.0;
 	char savefile_icmp[128];
 
