@@ -1356,16 +1356,19 @@ rtsp_thread(void *param) {
 	if(ga_conf_readv("save-yuv-image", savefile_yuv, sizeof(savefile_yuv)) != NULL)
 		savefp_yuv = ga_save_init(savefile_yuv);
 	if(savefp_yuv != NULL
+	&& ga_conf_readbool("enable-yuv-log", 0) != 0
 	&& ga_conf_readv("save-yuv-image-timestamp", savefile_yuvts, sizeof(savefile_yuvts)) != NULL)
 		savefp_yuvts = ga_save_init_txt(savefile_yuvts);
 	// ⭐ 디코딩 크기 로그 파일 초기화
 	char savefile_decodingsize[128];
-	if(ga_conf_readv("save-decoding-size-log", savefile_decodingsize, sizeof(savefile_decodingsize)) != NULL)
+	if(ga_conf_readbool("enable-decoding-size-log", 0) != 0 &&
+	   ga_conf_readv("save-decoding-size-log", savefile_decodingsize, sizeof(savefile_decodingsize)) != NULL)
 		savefp_decodingsize = ga_save_init_txt(savefile_decodingsize);
 	
 	// ⭐ 대역폭 로그 파일 초기화
 	char savefile_bandwidth[128];
-	if(ga_conf_readv("save-bandwidth-log", savefile_bandwidth, sizeof(savefile_bandwidth)) != NULL) {
+	if(ga_conf_readbool("enable-bandwidth-log", 0) != 0 &&
+	   ga_conf_readv("save-bandwidth-log", savefile_bandwidth, sizeof(savefile_bandwidth)) != NULL) {
 		savefp_bandwidth = ga_save_init_txt(savefile_bandwidth);
 		if(savefp_bandwidth) {
 			ga_save_printf(savefp_bandwidth, "Timestamp, Bytes, Duration(s), Mbps, Kbps\n");

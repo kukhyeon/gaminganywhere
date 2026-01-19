@@ -209,14 +209,14 @@ int
 calculate_new_bitrate(long long diff, int current_bitrate){
 	int new_bitrate;
 	// 지연 차이가 크면 급격히 감소, 작으면 완만하게 증가
-	if (diff > 100) { // 50ms 초과
+	if (diff > 50) { // 50ms 초과
 		new_bitrate = (int)(current_bitrate * 0.85); // 15% 감소 
 	} else {
 		// 네트워크 지연(diff)이 적을수록(좋을수록) 더 과감하게 비트레이트를 올립니다.
 		// diff = 0ms 일 때 +1000 Kbps (최대 증가폭)
 		// diff = 50ms 일 때 +0 Kbps (증가 없음)
 		// 공식: 1000 - (diff * 20)
-		int increase_amount = 1000 - (int)(diff * 10.0); 
+		int increase_amount = 1000 - (int)(diff * 20.0); 
 		
 		// 음수 방지 및 최대치 제한 (0 ~ 1000Kbps)
 		if (increase_amount < 0) increase_amount = 0;
@@ -226,7 +226,7 @@ calculate_new_bitrate(long long diff, int current_bitrate){
 	}
 
 	if (new_bitrate < 500) return 500;
-	if (new_bitrate > 8000) return 8000;
+	if (new_bitrate > 5000) return 5000;
 	return new_bitrate;
 }
 
