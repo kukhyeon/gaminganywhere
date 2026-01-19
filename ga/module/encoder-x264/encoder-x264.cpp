@@ -142,11 +142,13 @@ feedback_threadproc(void *arg) {
 
 	// Log file init
 	char savefile_feedback[128];
-	if(ga_conf_readbool("enable-feedback-log", 0) != 0 && 
-	   ga_conf_readv("save-feedback-log", savefile_feedback, sizeof(savefile_feedback)) != NULL) {
-		savefp_feedback = ga_save_init_txt(savefile_feedback);
-		if(savefp_feedback) {
-			ga_save_printf(savefp_feedback, "Timestamp, FrameID, RTT(us)\n");
+	savefp_feedback = NULL;
+	if (ga_conf_readbool("enable-feedback-log", 0) != 0) {
+		if (ga_conf_readv("save-feedback-log", savefile_feedback, sizeof(savefile_feedback)) != NULL) {
+			savefp_feedback = ga_save_init_txt(savefile_feedback);
+			if (savefp_feedback) {
+				ga_save_printf(savefp_feedback, "Timestamp, FrameID, RTT(us)\n");
+			}
 		}
 	}
 
@@ -478,31 +480,37 @@ vencoder_threadproc(void *arg) {
 	gettimeofday(&last_log_tv, NULL);
 
 	// ⭐ 프레임 ID 로그 파일 초기화 (프로그램 시작 시 한 번만)
-	if (savefp_frameid == NULL && ga_conf_readbool("enable-frame-id-log", 0) != 0) {
-		char savefile_frameid[128];
-		if(ga_conf_readv("save-frame-id-timestamp", savefile_frameid, sizeof(savefile_frameid)) != NULL) {
-			savefp_frameid = ga_save_init_txt(savefile_frameid);
-			ga_error("SERVER: Frame ID log file initialized: %s\n", savefile_frameid);
+	if (savefp_frameid == NULL) {
+		if (ga_conf_readbool("enable-frame-id-log", 0) != 0) {
+			char savefile_frameid[128];
+			if(ga_conf_readv("save-frame-id-timestamp", savefile_frameid, sizeof(savefile_frameid)) != NULL) {
+				savefp_frameid = ga_save_init_txt(savefile_frameid);
+				ga_error("SERVER: Frame ID log file initialized: %s\n", savefile_frameid);
+			}
 		}
 	}
 	
 	// ⭐ 프레임 크기 로그 파일 초기화 (프로그램 시작 시 한 번만)
-	if (savefp_framesize == NULL && ga_conf_readbool("enable-frame-size-log", 0) != 0) {
-		char savefile_framesize[128];
-		if(ga_conf_readv("save-frame-size-log", savefile_framesize, sizeof(savefile_framesize)) != NULL) {
-			savefp_framesize = ga_save_init_txt(savefile_framesize);
-			ga_error("SERVER: Frame size log file initialized: %s\n", savefile_framesize);
+	if (savefp_framesize == NULL) {
+		if (ga_conf_readbool("enable-frame-size-log", 0) != 0) {
+			char savefile_framesize[128];
+			if(ga_conf_readv("save-frame-size-log", savefile_framesize, sizeof(savefile_framesize)) != NULL) {
+				savefp_framesize = ga_save_init_txt(savefile_framesize);
+				ga_error("SERVER: Frame size log file initialized: %s\n", savefile_framesize);
+			}
 		}
 	}
 	
 	// ⭐ FPS 로그 파일 초기화 (프로그램 시작 시 한 번만)
-	if (savefp_fps == NULL && ga_conf_readbool("enable-fps-log", 0) != 0) {
-		char savefile_fps[128];
-		if(ga_conf_readv("save-fps-log", savefile_fps, sizeof(savefile_fps)) != NULL) {
-			savefp_fps = ga_save_init_txt(savefile_fps);
-			if(savefp_fps) {
-				ga_save_printf((FILE*)savefp_fps, "Timestamp, FrameCount\n");
-				ga_error("SERVER: Frame count log file initialized: %s\n", savefile_fps);
+	if (savefp_fps == NULL) {
+		if (ga_conf_readbool("enable-fps-log", 0) != 0) {
+			char savefile_fps[128];
+			if(ga_conf_readv("save-fps-log", savefile_fps, sizeof(savefile_fps)) != NULL) {
+				savefp_fps = ga_save_init_txt(savefile_fps);
+				if(savefp_fps) {
+					ga_save_printf((FILE*)savefp_fps, "Timestamp, FrameCount\n");
+					ga_error("SERVER: Frame count log file initialized: %s\n", savefile_fps);
+				}
 			}
 		}
 	}
