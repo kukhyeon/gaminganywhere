@@ -87,6 +87,7 @@ static double current_udp_rtt = 0.0;   // ms
 static double current_icmp_rtt = 0.0;  // ms
 static pthread_mutex_t rtt_data_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int abr_enabled = 0;
+static struct timeval vencoder_start_tv; // ⭐ 인코더 시작 시점 저장용
 
 typedef struct ga_abr_config_s {
 	int bitrateKbps;
@@ -174,7 +175,8 @@ feedback_threadproc(void *arg) {
 				
 				// Save to log file
 				if(savefp_feedback != NULL) {
-					ga_save_printf(savefp_feedback, "%u.%06u, %u, %lld\n", now.tv_sec, now.tv_usec, recv_frame_id, diff_us);
+					double rtime = (now.tv_sec - vencoder_start_tv.tv_sec) + (now.tv_usec - vencoder_start_tv.tv_usec) / 1000000.0;
+					ga_save_printf(savefp_feedback, "%.6f, %u, %lld\n", rtime, recv_frame_id, diff_us);
 				}
 
 				frame_send_times.erase(recv_frame_id);
@@ -277,6 +279,9 @@ vencoder_init(void *arg) {
 	if(vencoder_initialized != 0)
 		return 0;
 	//
+	// ⭐ 기준 시간 초기화
+	gettimeofday(&vencoder_start_tv, NULL);
+
 	for(iid = 0; iid < video_source_channels(); iid++) {
 		char pipename[64];
 		int outputW, outputH;
@@ -635,6 +640,7 @@ vencoder_threadproc(void *arg) {
 			if(savefp_framesize != NULL) {
 				struct timeval size_tv;
 				gettimeofday(&size_tv, NULL);
+				double rtime = (size_tv.tv_sec - vencoder_start_tv.tv_sec) + (size_tv.tv_usec - vencoder_start_tv.tv_usec) / 1000000.0;
 				ga_save_printf((FILE*)savefp_framesize, 
 					"Frame #%d | Encoded: %d bytes | Time: %u.%06u\n",
 					frameIndex, pkt.size, size_tv.tv_sec, size_tv.tv_usec);
@@ -887,7 +893,7 @@ rtt_server_threadproc(void *arg) {
 	if(ga_conf_readv("save-rtt-log", savefile_rtt, sizeof(savefile_rtt)) != NULL) {
 		savefp_rtt = ga_save_init_txt(savefile_rtt);
 		if(savefp_rtt) {
-			ga_save_printf(savefp_rtt, "Timestamp, Seq, RTT(ms)\n");
+			ga_save_printf(savefp_rtt, "Time(s), Seq, RTT(ms)\n");
 			ga_error("SERVER: RTT log file initialized: %s\n", savefile_rtt);
 		}
 	}
@@ -981,7 +987,7 @@ icmp_ping_threadproc(void *arg) {
 	if(ga_conf_readv("save-icmp-log", savefile_icmp, sizeof(savefile_icmp)) != NULL) {
 		savefp_icmp = ga_save_init_txt(savefile_icmp);
 		if(savefp_icmp) {
-			ga_save_printf(savefp_icmp, "Timestamp, RTT(ms)\n");
+			ga_save_printf(savefp_icmp, "Time(s), RTT(ms)\n");
 			ga_error("SERVER: ICMP log file initialized: %s\n", savefile_icmp);
 		}
 	}
@@ -1004,7 +1010,8 @@ icmp_ping_threadproc(void *arg) {
 				gettimeofday(&now, NULL);
 				
 				if (savefp_icmp) {
-					ga_save_printf(savefp_icmp, "%u.%06u, %.3f\n", now.tv_sec, now.tv_usec, latency);
+					double rtime = (now.tv_sec - vencoder_start_tv.tv_sec) + (now.tv_usec - vencoder_start_tv.tv_usec) / 1000000.0;
+					ga_save_printf(savefp_icmp, "%.6f, %.3f\n", rtime, latency);
 				}
 
 				if (latency > 100.0) {

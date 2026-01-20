@@ -51,6 +51,7 @@ static int g_current_bitrate = 0;
 static int g_current_fps = 0;
 static FILE *savefp_abr = NULL;
 static int abr_log_seq = 0;
+static struct timeval abr_start_tv; // ⭐ 서버 시작(ABR 시작) 시점 저장용
 
 int
 load_modules() {
@@ -267,13 +268,16 @@ vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_par
 	if (savefp_abr != NULL) {
 		struct timeval now;
 		gettimeofday(&now, NULL);
-		ga_save_printf(savefp_abr, "%d,%u.%06u,%d,%d,%lld\n", 
-					abr_log_seq++, now.tv_sec, now.tv_usec, 
+		// ⭐ 상대 시간 계산 (초 단위, 소수점 6자리까지)
+		double relative_time = (now.tv_sec - abr_start_tv.tv_sec) + (now.tv_usec - abr_start_tv.tv_usec) / 1000000.0;
+		ga_save_printf(savefp_abr, "%d,%.6f,%d,%d,%lld\n", 
+					abr_log_seq++, relative_time, 
 					g_current_bitrate, g_current_fps, diff);
+
+		ga_error("ABR: Update - Seq:%d, Time:%.3f, Bitrate:%dKbps, FPS:%d, Diff:%lldms\n", 
+				abr_log_seq-1, relative_time, g_current_bitrate, g_current_fps, diff);
 	}
 
-	ga_error("ABR: Update - Seq:%d, Bitrate:%dKbps, FPS:%d\n", 
-			abr_log_seq-1, g_current_bitrate, g_current_fps);
 
     ga_error("ABR: Update - Diff:%lldms, Bitrate:%dKbps, FPS:%d, Buf:%d\n", 
              diff, g_current_bitrate, g_current_fps, out_params->bufsize);
@@ -284,6 +288,9 @@ vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_par
 static void *
 abr_controller_thread(void *arg) {
 	ga_error("ABR controller thread started ...\n");
+
+	// ⭐ 기준 시간 초기화
+	gettimeofday(&abr_start_tv, NULL);
 
 	if (savefp_abr == NULL) {
 		char savefile_abr[128];
@@ -297,6 +304,9 @@ abr_controller_thread(void *arg) {
 		} else {
 			// 설정값이 없을 때만 기본값 사용
 			savefp_abr = ga_save_init_txt("abr_log.csv");
+			if (savefp_abr) {
+				ga_save_printf(savefp_abr, "Seq,RelativeTime(s),Bitrate(Kbps),FPS,Diff(ms)\n");
+			}
 		}
 	}
 
