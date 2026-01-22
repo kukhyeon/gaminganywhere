@@ -809,8 +809,9 @@ vencoder_threadproc(void *arg) {
 			
 			if (log_diff_us >= 1000000) { // 1 second
 				if (savefp_fps != NULL) {
-					ga_save_printf((FILE*)savefp_fps, "%u.%06u, %d, %lld\n", 
-						current_log_tv.tv_sec, current_log_tv.tv_usec, 
+					double relative_time = (current_log_tv.tv_sec - vencoder_start_tv.tv_sec) + (current_log_tv.tv_usec - vencoder_start_tv.tv_usec) / 1000000.0;
+					ga_save_printf((FILE*)savefp_fps, "%.6f, %d, %lld\n", 
+						relative_time, 
 						frame_interval_count, byte_interval_count);
 				}
 				
