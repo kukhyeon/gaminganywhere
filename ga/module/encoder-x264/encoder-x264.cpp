@@ -484,6 +484,7 @@ vencoder_threadproc(void *arg) {
 	
 	// Frame count logging variables
 	int frame_interval_count = 0;
+	long long byte_interval_count = 0; // ⭐ 추가: 1초당 누적 전송 바이트 수
 	struct timeval last_log_tv, current_log_tv;
 	gettimeofday(&last_log_tv, NULL);
 
@@ -516,7 +517,7 @@ vencoder_threadproc(void *arg) {
 			if(ga_conf_readv("save-fps-log", savefile_fps, sizeof(savefile_fps)) != NULL) {
 				savefp_fps = ga_save_init_txt(savefile_fps);
 				if(savefp_fps) {
-					ga_save_printf((FILE*)savefp_fps, "Timestamp, FrameCount\n");
+					ga_save_printf((FILE*)savefp_fps, "Timestamp, FrameCount, BytesSent\n");
 					ga_error("SERVER: Frame count log file initialized: %s\n", savefile_fps);
 				}
 			}
@@ -682,6 +683,7 @@ vencoder_threadproc(void *arg) {
 					pkt.pts, NULL) < 0) {
 				goto video_quit;
 			}
+			byte_interval_count += pkt.size; // ⭐ 추가: 전송 바이트 누적 (Method 1)
 #ifdef SAVEENC
 			if(fsaveenc != NULL)
 				fwrite(pkt.data, sizeof(char), pkt.size, fsaveenc);
@@ -711,6 +713,7 @@ vencoder_threadproc(void *arg) {
 					iid/*rtspconf->video_id*/, &pkt, pkt.pts, NULL) < 0) {
 					goto video_quit;
 				}
+				byte_interval_count += pkt.size; // ⭐ 추가: 전송 바이트 누적 (Method 2 - SPS/PPS)
 #ifdef SAVEENC
 				if(fsaveenc != NULL)
 					fwrite(pkt.data, sizeof(char), pkt.size, fsaveenc);
@@ -777,6 +780,7 @@ vencoder_threadproc(void *arg) {
 					iid/*rtspconf->video_id*/, &pkt, pkt.pts, NULL) < 0) {
 					goto video_quit;
 				}
+				byte_interval_count += pkt.size; // ⭐ 추가: 전송 바이트 누적 (Method 2 - Video Frame)
 #ifdef SAVEENC
 				if(fsaveenc != NULL)
 					fwrite(pkt.data, sizeof(char), pkt.size, fsaveenc);
@@ -805,12 +809,14 @@ vencoder_threadproc(void *arg) {
 			
 			if (log_diff_us >= 1000000) { // 1 second
 				if (savefp_fps != NULL) {
-					ga_save_printf((FILE*)savefp_fps, "%u.%06u, %d\n", 
-						current_log_tv.tv_sec, current_log_tv.tv_usec, frame_interval_count);
+					ga_save_printf((FILE*)savefp_fps, "%u.%06u, %d, %lld\n", 
+						current_log_tv.tv_sec, current_log_tv.tv_usec, 
+						frame_interval_count, byte_interval_count);
 				}
 				
 				// Reset counters
 				frame_interval_count = 0;
+				byte_interval_count = 0;
 				last_log_tv = current_log_tv;
 			}
 		}
