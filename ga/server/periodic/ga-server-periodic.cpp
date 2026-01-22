@@ -300,11 +300,11 @@
 	 return 1; // 설정이 변경되었음을 알림
  }
  
- static void *
- abr_controller_thread(void *arg) {
-	 ga_error("ABR controller thread started ...\n");
-	 gettimeofday(&abr_start_tv, NULL);
-	 if (savefp_abr == NULL) {
+static void *
+abr_controller_thread(void *arg) {
+	ga_error("ABR controller thread started ...\n");
+	abr_start_tv = *ga_get_start_time();
+	if (savefp_abr == NULL) {
 		 char savefile_abr[128];
  
 		 // 하드코딩 대신 설정 파일(save-abr-log)에서 경로를 읽어오도록 수정

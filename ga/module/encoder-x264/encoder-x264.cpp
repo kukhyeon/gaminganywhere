@@ -279,8 +279,8 @@ vencoder_init(void *arg) {
 	if(vencoder_initialized != 0)
 		return 0;
 	//
-	// ⭐ 기준 시간 초기화
-	gettimeofday(&vencoder_start_tv, NULL);
+	// ⭐ 기준 시간 동기화 (global start time 사용)
+	vencoder_start_tv = *ga_get_start_time();
 
 	for(iid = 0; iid < video_source_channels(); iid++) {
 		char pipename[64];

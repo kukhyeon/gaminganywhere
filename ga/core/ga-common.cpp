@@ -64,6 +64,8 @@ using namespace std;
 
 /** The gloabl log file name */
 static char *ga_logfile = NULL;
+/** The global start time */
+static struct timeval ga_start_tv;
 
 /**
  * Compute the time difference for two \a timeval data structure, i.e.,
@@ -308,6 +310,7 @@ ga_dump_codecs() {
  */
 int
 ga_init(const char *config, const char *url) {
+	gettimeofday(&ga_start_tv, NULL);
 	srand(time(0));
 	winsock_init();
 #ifndef ANDROID_NO_FFMPEG
@@ -370,6 +373,14 @@ ga_closelog() {
 		ga_logfile = NULL;
 	}
 	return;
+}
+
+/**
+ * Get the global start time
+ */
+struct timeval *
+ga_get_start_time() {
+	return &ga_start_tv;
 }
 
 // save file feature

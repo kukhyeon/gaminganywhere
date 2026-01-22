@@ -85,6 +85,7 @@ EXPORT int	ga_init(const char *config, const char *url);
 EXPORT void	ga_deinit();
 EXPORT void	ga_openlog();
 EXPORT void	ga_closelog();
+EXPORT struct timeval * ga_get_start_time();
 // save file feature
 EXPORT FILE *	ga_save_init(const char *filename);
 EXPORT FILE *	ga_save_init_txt(const char *filename);
