@@ -170,7 +170,10 @@ feedback_threadproc(void *arg) {
 
 				// ABR 데이터 업데이트
 				pthread_mutex_lock(&rtt_data_mutex);
-				current_udp_rtt = diff_us / 1000.0;
+				if (recv_frame_id >= last_processed_frame_id) {
+					current_udp_rtt = diff_us / 1000.0;
+					last_processed_frame_id = recv_frame_id;
+				}
 				pthread_mutex_unlock(&rtt_data_mutex);
 				
 				// Save to log file
