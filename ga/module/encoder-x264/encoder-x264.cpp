@@ -807,7 +807,7 @@ vencoder_threadproc(void *arg) {
 			gettimeofday(&current_log_tv, NULL);
 			long long log_diff_us = tvdiff_us(&current_log_tv, &last_log_tv);
 			
-			if (log_diff_us >= 1000000) { // 1 second
+			if (log_diff_us >= 100000) { // 0.1 second (ABR 주기와 동기화)
 				if (savefp_fps != NULL) {
 					double relative_time = (current_log_tv.tv_sec - vencoder_start_tv.tv_sec) + (current_log_tv.tv_usec - vencoder_start_tv.tv_usec) / 1000000.0;
 					ga_save_printf((FILE*)savefp_fps, "%.6f, %d, %lld\n", 
