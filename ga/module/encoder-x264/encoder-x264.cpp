@@ -91,6 +91,7 @@ static struct timeval vencoder_start_tv; // ⭐ 인코더 시작 시점 저장�
 static double last_udp_rtt = 0.0;
 static double current_delta_udp_rtt = 0.0;
 static uint32_t last_processed_frame_id = 0; 
+static struct timeval last_feedback_arrival_tv = {0}; // ⭐ 피드백 도착 시점 저장용
 
 typedef struct ga_abr_config_s {
 	int bitrateKbps;
@@ -175,7 +176,13 @@ feedback_threadproc(void *arg) {
 				pthread_mutex_lock(&rtt_data_mutex);
 				if (recv_frame_id >= last_processed_frame_id) {
 					double new_udp_rtt = diff_us / 1000.0;
-					current_delta_udp_rtt = new_udp_rtt - current_udp_rtt;
+					if (last_feedback_arrival_tv.tv_sec != 0) {
+						current_delta_udp_rtt = tvdiff_us(&now, &last_feedback_arrival_tv) / 1000.0;
+					} else {
+						current_delta_udp_rtt = 0.0;
+					}
+					last_feedback_arrival_tv = now;
+
 					current_udp_rtt = new_udp_rtt;
 					last_processed_frame_id = recv_frame_id;
 				}
