@@ -54,6 +54,8 @@
  static struct timeval abr_start_tv;
  static double g_avg_diff = 0.0;     // ⭐ 추가: diff의 이동 평균
  static double g_smooth_bitrate = 0.0; // ⭐ 추가: 비트레이트 이동 평균
+static double g_ema_delta_udp = 0.0;  // ⭐ 추가: delta_udp의 EMA
+static double g_ema_delta_diff = 0.0; // ⭐ 추가: delta_diff의 EMA
  int
  load_modules() {
 	 if((m_vsource = ga_load_module("mod/vsource-desktop", "vsource_")) == NULL)
@@ -250,55 +252,97 @@
 	 return next_fps;
  }
  //
- 
- static int
- vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_params) {
-	 // 필터 계수 설정 (0~1 사이, 작을수록 부드럽고 클수록 반응이 빠름)
-	 double alpha_diff = 0.3;    // diff용 필터
-	 double alpha_bitrate = 0.5; // 비트레이트 상승용 필터
- 
-	 // 1. diff 계산 및 음수 처리 (무시)
-	 long long current_diff = (long long)(udp_rtt - icmp_rtt);
-	 if (current_diff < 0) current_diff = 0; // 지터 등으로 인한 음수는 0으로 처리
- 
-	 // 2. diff 이동 평균 (입력 안정화)
-	 g_avg_diff = (alpha_diff * current_diff) + (1.0 - alpha_diff) * g_avg_diff;
- 
-	 // 3. 알고리즘을 통한 타겟 비트레이트 계산
-	 int target_bitrate = calculate_new_bitrate((long long)g_avg_diff, g_current_bitrate);
-	 g_current_fps = calculate_new_fps((long long)g_avg_diff, g_current_fps);
- 
-	 // 4. bitrate 이동 평균 (출력 안정화: 비대칭 로직)
-	 if (target_bitrate < g_smooth_bitrate) {
-	 // 하락 시에는 반응성을 위해 즉시 반영 (네트워크 보호)
-		 g_smooth_bitrate = target_bitrate;
-	 } else {
-	 // 상승 시에는 부드럽게 증가
-		 g_smooth_bitrate = (alpha_bitrate * target_bitrate) + (1.0 - alpha_bitrate) * g_smooth_bitrate;
-	 }
- 
-	 g_current_bitrate = (int)g_smooth_bitrate;
- 
-	 // 5. 출력 파라미터 설정
-	 out_params->bitrateKbps = g_current_bitrate;
-	 out_params->framerate_n = g_current_fps;
-	 out_params->framerate_d = 1;
-	 out_params->bufsize = g_current_bitrate / 2; 
- 
-	 // --- CSV 파일에 기록 ---
-	 if (savefp_abr != NULL) {
-		 struct timeval now;
-		 gettimeofday(&now, NULL);
-		 double relative_time = (now.tv_sec - abr_start_tv.tv_sec) + (now.tv_usec - abr_start_tv.tv_usec) / 1000000.0;
-		 ga_save_printf(savefp_abr, "%d,%.6f,%d,%d,%lld,%.2f\n", 
-					 abr_log_seq++, relative_time, 
-					 g_current_bitrate, g_current_fps, current_diff, g_avg_diff);
-	 }
- 
-	 //ga_error("ABR: Update - Seq:%d, Bitrate:%dKbps, FPS:%d\n", 
-	 //		abr_log_seq-1, g_current_bitrate, g_current_fps);
-	 return 1; // 설정이 변경되었음을 알림
- }
+
+int
+calculate_new_parameter(double ema_delta_udp, double ema_delta_diff, int *current_bitrate, int *current_fps) {
+	double ideal_latency = 1000.0 / (*current_fps);
+    int changed = 0;
+
+// 1. 하향 로직: 필터링된 간격이 벌어지고, 필터링된 지연 변화량이 양수일 때
+    // ema_delta_diff가 ideal_latency의 20%만 지속적으로 넘어도 반응 (보수적 접근)
+    if (ema_delta_udp > (ideal_latency * 1.1) && ema_delta_diff > (ideal_latency * 0.2)) {
+        *current_bitrate = (int)(*current_bitrate * 0.85); 
+        *current_fps -= 2;
+        changed = 1;
+    } 
+    // 2. 상향 로직: 지연 증가 추세가 없고(<=0), 평균 지연이 충분히 낮을 때
+    else if (ema_delta_diff <= 0 && g_avg_diff < 15.0) {
+        *current_bitrate += 100;
+        if (ema_delta_udp <= ideal_latency && *current_fps < 60) {
+            *current_fps += 1;
+        }
+        changed = 1;
+    }
+
+    // 경계값 체크
+    if (*current_bitrate < 1000)  *current_bitrate = 1000;
+    if (*current_bitrate > 15000) *current_bitrate = 15000;
+    if (*current_fps < 15) *current_fps = 15;
+    if (*current_fps > 120) *current_fps = 120;
+
+    return changed;
+}
+
+static int
+vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, double delta_udp, ga_abr_config_t *out_params) {
+	// 필터 계수 설정 (0~1 사이, 작을수록 부드럽고 클수록 반응이 빠름)
+	double alpha_diff = 0.3;    // diff용 필터
+	double alpha_delta_udp = 0.5; // 비트레이트 상승용 필터
+	double alpha_delta_diff = 0.2;
+
+	// 1. 현재 diff 계산
+	long long current_diff = (long long)(udp_rtt - icmp_rtt);
+	if (current_diff < 0) current_diff = 0;
+
+	// 2. Raw Delta Diff 계산 (현재 값 - 이전 평균)
+	double raw_delta_diff = (double)current_diff - g_avg_diff;
+
+	// 3. EMA 필터 적용
+	// 도착 간격 필터링 (한두 번 튀는 패킷 무시)
+	g_ema_delta_udp = (alpha_delta_udp * delta_udp) + (1.0 - alpha_delta_udp) * g_ema_delta_udp;
+
+	// 변화량 추세 필터링 (지속적인 상승세인지 확인)
+	g_ema_delta_diff = (alpha_delta_diff * raw_delta_diff) + (1.0 - alpha_delta_diff) * g_ema_delta_diff;
+
+	// 전체 평균 diff 업데이트
+	g_avg_diff = (alpha_diff * current_diff) + (1.0 - alpha_diff) * g_avg_diff;
+
+	// 4. 필터링된 값들로 파라미터 계산
+	int target_bitrate = g_current_bitrate;
+	int target_fps = g_current_fps;
+
+	if (calculate_new_parameter(g_ema_delta_udp, g_ema_delta_diff, &target_bitrate, &target_fps)) {
+		// 비트레이트 하락 시 즉시 반영, 상승 시 부드럽게 (기존 비대칭 로직 유지)
+		if (target_bitrate < g_smooth_bitrate) {
+			g_smooth_bitrate = target_bitrate;
+		} else {
+			double alpha_up = 0.5;
+			g_smooth_bitrate = (alpha_up * target_bitrate) + (1.0 - alpha_up) * g_smooth_bitrate;
+		}
+		g_current_bitrate = (int)g_smooth_bitrate;
+		g_current_fps = target_fps;
+	}
+
+	// 5. 출력 파라미터 설정
+	out_params->bitrateKbps = g_current_bitrate;
+	out_params->framerate_n = g_current_fps;
+	out_params->framerate_d = 1;
+	out_params->bufsize = g_current_bitrate / 2; 
+
+	// --- CSV 파일에 기록 ---
+	if (savefp_abr != NULL) {
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        double relative_time = (now.tv_sec - abr_start_tv.tv_sec) + (now.tv_usec - abr_start_tv.tv_usec) / 1000000.0;
+        ga_save_printf(savefp_abr, "%d,%.6f,%d,%d,%.2f,%.2f,%.2f\n", 
+                    abr_log_seq++, relative_time, 
+                    g_current_bitrate, g_current_fps, g_avg_diff, g_ema_delta_udp, g_ema_delta_diff);
+    }
+
+	//ga_error("ABR: Update - Seq:%d, Bitrate:%dKbps, FPS:%d\n", 
+	//		abr_log_seq-1, g_current_bitrate, g_current_fps);
+	return 1; // 설정이 변경되었음을 알림
+}
  
 static void *
 abr_controller_thread(void *arg) {
@@ -358,7 +402,7 @@ abr_controller_thread(void *arg) {
  
 		 // 2. 알고리즘 실행
 		 bzero(&abr_conf, sizeof(abr_conf));
-		 if (vencoder_abr_algorithm(net_stat.udp_rtt_ms, net_stat.icmp_rtt_ms, &abr_conf)) {
+		 if (vencoder_abr_algorithm(net_stat.udp_rtt_ms, net_stat.icmp_rtt_ms, net_stat.delta_udp_rtt_ms, &abr_conf)) {
 			 // 3. 변경 사항이 있다면 vsource와 vencoder 모두에게 명령 하달
 			 bzero(&reconf, sizeof(reconf));
 			 reconf.id = 0;

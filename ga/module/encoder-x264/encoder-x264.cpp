@@ -88,6 +88,9 @@ static double current_icmp_rtt = 0.0;  // ms
 static pthread_mutex_t rtt_data_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int abr_enabled = 0;
 static struct timeval vencoder_start_tv; // ⭐ 인코더 시작 시점 저장용
+static double last_udp_rtt = 0.0;
+static double current_delta_udp_rtt = 0.0;
+static uint32_t last_processed_frame_id = 0; 
 
 typedef struct ga_abr_config_s {
 	int bitrateKbps;
@@ -171,7 +174,9 @@ feedback_threadproc(void *arg) {
 				// ABR 데이터 업데이트
 				pthread_mutex_lock(&rtt_data_mutex);
 				if (recv_frame_id >= last_processed_frame_id) {
-					current_udp_rtt = diff_us / 1000.0;
+					double new_udp_rtt = diff_us / 1000.0;
+					current_delta_udp_rtt = new_udp_rtt - current_udp_rtt;
+					current_udp_rtt = new_udp_rtt;
 					last_processed_frame_id = recv_frame_id;
 				}
 				pthread_mutex_unlock(&rtt_data_mutex);
@@ -1241,6 +1246,7 @@ vencoder_ioctl(int command, int argsize, void *arg) {
 			pthread_mutex_lock(&rtt_data_mutex);
 			net_stat->udp_rtt_ms = current_udp_rtt;
 			net_stat->icmp_rtt_ms = current_icmp_rtt;
+			net_stat->delta_udp_rtt_ms = current_delta_udp_rtt;
 			pthread_mutex_unlock(&rtt_data_mutex);
 		}
 		break;

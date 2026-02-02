@@ -101,6 +101,7 @@ typedef struct ga_ioctl_reconfigure_s {
 typedef struct ga_ioctl_network_status_s {
 	double udp_rtt_ms;
 	double icmp_rtt_ms;
+	double delta_udp_rtt_ms;
 }	ga_ioctl_network_status_t;
 
 #ifdef __cplusplus
