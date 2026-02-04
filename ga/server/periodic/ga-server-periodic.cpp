@@ -209,78 +209,59 @@ static double g_ema_delta_diff = 0.0; // ⭐ 추가: delta_diff의 EMA
   * @brief 사용자 정의 ABR 알고리즘 함수 (서버 측)
   * @return 1: 설정 변경 필요, 0: 유지
   */
- 
- // Reconfigure Bitrate & FPS
- int
- calculate_new_bitrate(long long diff, int current_bitrate){
-	 int new_bitrate;
-	 // 지연 차이가 크면 급격히 감소, 작으면 완만하게 증가
-	 if (diff > 40) { // 40ms 초과
-		 new_bitrate = (int)(current_bitrate * 0.85); // 15% 감소 
-	 } else {
-		 // 네트워크 지연(diff)이 적을수록(좋을수록) 더 과감하게 비트레이트를 올립니다.
-		 // diff = 0ms 일 때 +1000 Kbps (최대 증가폭)
-		 // diff = 50ms 일 때 +0 Kbps (증가 없음)
-		 // 공식: 1000 - (diff * 20)
-		 int increase_amount = 250 - (int)(diff * 12.5); 
-		 
-		 // 음수 방지 및 최대치 제한 (0 ~ 1000Kbps)
-		 if (increase_amount < 0) increase_amount = 0;
-		 if (increase_amount > 250) increase_amount = 250;
-		 
-		 new_bitrate = current_bitrate + increase_amount;
-	 }
- 
-	 if (new_bitrate < 500) return 500;
-	 if (new_bitrate > 5000) return 5000;
-	 return new_bitrate;
- }
- 
- int
- calculate_new_fps(long long diff, int current_fps){
-	 // 일단 보류
-	 /*
-	 if (diff > 50) {
-		 int next_fps = current_fps - 3;
-		 return (next_fps < 15) ? 15 : next_fps; // 최소 15fps
-	 } else {
-		 int next_fps = current_fps + 1;
-		 return (next_fps > 60) ? 60 : next_fps; // 최대 60fps로 제한 (120 점프 방지)
-	 }
-	 */
-	 int next_fps = 60;
-	 return next_fps;
- }
- //
+#define ABR_SENSITIVITY 0.15
+int
+calculate_new_parameter_1(double ema_delta_udp, int *current_bitrate, int *current_fps) {
+	double ideal_latency = 1000.0 / (*current_fps);
+	int changed = 0;
+
+	// 하향: 도착 간격이 프레임 주기보다 15% 이상 길어질 때
+	if (ema_delta_udp > ideal_latency * (1.0 + ABR_SENSITIVITY)) {
+		*current_bitrate = (int)(*current_bitrate * 0.85);
+		*current_fps -= 2;
+		changed = 1;
+	}
+	// 상향: 도착 간격이 프레임 주기보다 짧거나 같고, 현재 지연이 낮을 때
+	else if (ema_delta_udp <= ideal_latency && g_avg_diff < 15.0) {
+		*current_bitrate += 200;
+		if (*current_fps < 60) *current_fps += 1;
+		changed = 1;
+	}
+
+	// 경계값 체크
+	if (*current_bitrate < 1000)  *current_bitrate = 1000;
+	if (*current_bitrate > 15000) *current_bitrate = 15000;
+	if (*current_fps < 15) *current_fps = 15;
+	if (*current_fps > 60) *current_fps = 60;
+
+	return changed;
+}
 
 int
-calculate_new_parameter(double ema_delta_udp, double ema_delta_diff, int *current_bitrate, int *current_fps) {
+calculate_new_parameter_2(double ema_delta_diff, int *current_bitrate, int *current_fps) {
 	double ideal_latency = 1000.0 / (*current_fps);
-    int changed = 0;
+	int changed = 0;
 
-// 1. 하향 로직: 필터링된 간격이 벌어지고, 필터링된 지연 변화량이 양수일 때
-    // ema_delta_diff가 ideal_latency의 20%만 지속적으로 넘어도 반응 (보수적 접근)
-    if (ema_delta_udp > (ideal_latency * 1.1) && ema_delta_diff > (ideal_latency * 0.2)) {
-        *current_bitrate = (int)(*current_bitrate * 0.85); 
-        *current_fps -= 2;
-        changed = 1;
-    } 
-    // 2. 상향 로직: 지연 증가 추세가 없고(<=0), 평균 지연이 충분히 낮을 때
-    else if (ema_delta_diff <= 0 && g_avg_diff < 15.0) {
-        *current_bitrate += 100;
-        if (ema_delta_udp <= ideal_latency && *current_fps < 60) {
-            *current_fps += 1;
-        }
-        changed = 1;
-    }
+	// 하향: 큐잉 지연 증가폭이 프레임 주기의 15%를 넘을 때
+	if (ema_delta_diff > ideal_latency * ABR_SENSITIVITY) {
+		*current_bitrate = (int)(*current_bitrate * 0.85);
+		*current_fps -= 2;
+		changed = 1;
+	}
+	// 상향: 큐잉 지연이 평소보다 줄어들고 있고(<=0), 현재 지연이 낮을 때
+	else if (ema_delta_diff <= 0 && g_avg_diff < 15.0) {
+		*current_bitrate += 200;
+		if (*current_fps < 60) *current_fps += 1;
+		changed = 1;
+	}
 
-    // 경계값 체크
-    if (*current_bitrate < 1000)  *current_bitrate = 1000;
-    if (*current_bitrate > 15000) *current_bitrate = 15000;
-    if (*current_fps < 15) *current_fps = 15;
-    if (*current_fps > 120) *current_fps = 120;
+	// 경계값 체크
+	if (*current_bitrate < 1000)  *current_bitrate = 1000;
+	if (*current_bitrate > 15000) *current_bitrate = 15000;
+	if (*current_fps < 15) *current_fps = 15;
+	if (*current_fps > 60) *current_fps = 60;
 
-    return changed;
+	return changed;
 }
 
 static int
@@ -355,7 +336,8 @@ abr_controller_thread(void *arg) {
 		 if (ga_conf_readv("save-abr-log", savefile_abr, sizeof(savefile_abr)) != NULL) {
 			 savefp_abr = ga_save_init_txt(savefile_abr);
 			 if (savefp_abr) {
-				 ga_save_printf(savefp_abr, "Seq,Timestamp,Bitrate(Kbps),FPS,Diff(ms)\n");
+				// 순서: Seq, Time, Bitrate, FPS, Raw_UDP, EMA_UDP, Raw_Diff, EMA_Diff, Avg_Diff
+				 ga_save_printf(savefp_abr, "Seq,Timestamp,Bitrate(Kbps),FPS,avgDiff(ms),delta_timestamp,delta_diff\n");
 				 ga_error("SERVER: ABR log file initialized: %s\n", savefile_abr);
 			 }
 		 } else {
