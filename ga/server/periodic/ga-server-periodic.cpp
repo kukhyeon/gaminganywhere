@@ -212,21 +212,27 @@ static double g_ema_delta_diff = 0.0; // ⭐ 추가: delta_diff의 EMA
 #define ABR_SENSITIVITY 0.15
 int
 calculate_new_parameter_1(double ema_delta_udp, int *current_bitrate, int *current_fps) {
-	double ideal_latency = 1000.0 / (*current_fps);
-	int changed = 0;
+    double ideal_latency = 1000.0 / (*current_fps);
+    double error = ema_delta_udp - ideal_latency; // 오차 계산
+    double threshold = ideal_latency * ABR_SENSITIVITY; // 임계값 (예: 33ms * 0.15 = 4.95ms)
+    int changed = 0;
 
-	// 하향: 도착 간격이 프레임 주기보다 15% 이상 길어질 때
-	if (ema_delta_udp > ideal_latency * (1.0 + ABR_SENSITIVITY)) {
-		*current_bitrate = (int)(*current_bitrate * 0.85);
-		*current_fps -= 2;
-		changed = 1;
-	}
-	// 상향: 도착 간격이 프레임 주기보다 짧거나 같고, 현재 지연이 낮을 때
-	else if (ema_delta_udp <= ideal_latency && g_avg_diff < 15.0) {
-		*current_bitrate += 200;
-		if (*current_fps < 60) *current_fps += 1;
-		changed = 1;
-	}
+    // 데드밴드 적용: 오차의 절대값이 임계치보다 클 때만 동작
+    if (abs(error) > threshold) {
+        if (error > 0) {
+            // 1. 하향 로직 (Error > Threshold)
+            *current_bitrate = (int)(*current_bitrate * 0.85);
+            *current_fps -= 2;
+            changed = 1;
+        } 
+        else if (g_avg_diff < 15.0) {
+            // 2. 상향 로직 (Error < -Threshold)
+            // 도착 간격이 ideal보다 훨씬 짧아짐 = 네트워크가 매우 쾌적해짐
+            *current_bitrate += 200;
+            if (*current_fps < 60) *current_fps += 1;
+            changed = 1;
+        }
+    }
 
 	// 경계값 체크
 	if (*current_bitrate < 1000)  *current_bitrate = 1000;
