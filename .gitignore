@@ -14,7 +14,7 @@ env-setup.save
 *.tar.bz2
 *.tar.xz
 env-setup
-
+/ga/config/
 *.tbz
 *.exe
 bin/
