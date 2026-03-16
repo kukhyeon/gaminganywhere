@@ -33,6 +33,7 @@ unsigned increaseReceiveBufferTo(UsageEnvironment& env,
 #include "rtspclient.h"
 
 #include "ga-common.h"
+#include "ga-csvlog.h"
 #include "ga-conf.h"
 #include "ga-avcodec.h"
 #include "controller.h"
@@ -76,6 +77,30 @@ typedef struct {
 static int rtt_client_sock = -1;
 static pthread_t rtt_client_tid = 0;
 static int rtt_client_running = 0;
+
+static void
+client_csvlog_decode_size(int channel, uint32_t frame_id, int size_bytes) {
+	ga_csvlog_record_t record;
+	ga_csvlog_record_reset(&record, "rtspclient", "decode-size");
+	record.channel = channel;
+	record.frame_id = frame_id;
+	record.size_bytes = size_bytes;
+	ga_csvlog_write(GA_CSVLOG_SIDE_CLIENT, &record);
+}
+
+static void
+client_csvlog_bandwidth(long long bytes, double seconds, double mbps, double kbps) {
+	ga_csvlog_record_t record;
+	char note[128];
+	snprintf(note, sizeof(note), "duration_s=%.4f", seconds);
+	ga_csvlog_record_reset(&record, "rtspclient", "bandwidth");
+	record.size_bytes = bytes;
+	record.metric = "mbps";
+	record.value = mbps;
+	record.aux_value = kbps;
+	record.note = note;
+	ga_csvlog_write(GA_CSVLOG_SIDE_CLIENT, &record);
+}
 
 static void *
 rtt_echo_threadproc(void *arg) {
@@ -845,6 +870,7 @@ play_video_priv(int ch/*channel*/, unsigned char *buffer, int bufsize, struct ti
 					"Frame #%u | Received: %d bytes | Time: %u.%06u\n",
 					frame_index, encoded_packet_size, decode_tv.tv_sec, decode_tv.tv_usec);
 			}
+			client_csvlog_decode_size(ch, frame_index, encoded_packet_size);
 
 #ifdef COUNT_FRAME_RATE
 			cf_frame[ch]++;
@@ -2018,12 +2044,13 @@ DummySink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBytes,
 			rtsperror("[Network] Bandwidth: %.2f Mbps (%.2f Kbps) | Vol: %lld bytes / %.2f sec\n", 
 				mbps, kbps, bw_total_bytes, seconds);
 
-			if (savefp_bandwidth != NULL) {
-				ga_save_printf(savefp_bandwidth, "%u.%06u, %lld, %.4f, %.4f, %.4f\n", 
-					bw_now.tv_sec, bw_now.tv_usec, bw_total_bytes, seconds, mbps, kbps);
-			}
+				if (savefp_bandwidth != NULL) {
+					ga_save_printf(savefp_bandwidth, "%u.%06u, %lld, %.4f, %.4f, %.4f\n", 
+						bw_now.tv_sec, bw_now.tv_usec, bw_total_bytes, seconds, mbps, kbps);
+				}
+				client_csvlog_bandwidth(bw_total_bytes, seconds, mbps, kbps);
 
-			bw_total_bytes = 0;
+				bw_total_bytes = 0;
 			bw_last_time = bw_now;
 		}
 
@@ -2147,4 +2174,3 @@ DummySink::continuePlaying() {
 			onSourceClosure, this);
 	return True;
 }
-

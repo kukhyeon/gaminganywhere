@@ -26,6 +26,7 @@ all: $(TARGET)
 	$(CXX) -c -g $(CFLAGS) $<
 
 OBJS =	ga-common.o ga-conf.o ga-confvar.o ga-module.o ga-avcodec.o \
+	ga-csvlog.o \
 	ga-crc.o \
 	rtspconf.o dpipe.o vconverter.o \
 	vsource.o asource.o encoder-common.o controller.o
@@ -41,4 +42,3 @@ install:
 
 clean:
 	rm -f $(TARGET) *.o *~
-

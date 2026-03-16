@@ -44,6 +44,7 @@
 #endif
 
 #include "ga-common.h"
+#include "ga-csvlog.h"
 #include "ga-conf.h"
 #ifndef ANDROID_NO_FFMPEG
 #include "ga-avcodec.h"
@@ -336,6 +337,7 @@ ga_init(const char *config, const char *url) {
  */
 void
 ga_deinit() {
+	ga_csvlog_close_all();
 	return;
 }
 
@@ -1000,4 +1002,3 @@ ga_lookup_codec_id(const char *key) {
 	}
 	return e->id;
 }
-

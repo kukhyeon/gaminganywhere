@@ -23,6 +23,7 @@
 #endif
 
 #include "ga-common.h"
+#include "ga-csvlog.h"
 #include "ga-conf.h"
 #include "ga-module.h"
 #include "rtspconf.h"
@@ -51,6 +52,20 @@ static int g_current_bitrate = 0;
 static int g_current_fps = 0;
 static FILE *savefp_abr = NULL;
 static int abr_log_seq = 0;
+
+static void
+server_csvlog_abr_update(int seq, int bitrate_kbps, int fps, long long diff_ms) {
+	char note[128];
+	ga_csvlog_record_t record;
+	snprintf(note, sizeof(note), "diff_ms=%lld", diff_ms);
+	ga_csvlog_record_reset(&record, "ga-server-periodic", "abr-update");
+	record.seq = seq;
+	record.metric = "bitrate_kbps";
+	record.value = bitrate_kbps;
+	record.aux_value = fps;
+	record.note = note;
+	ga_csvlog_write(GA_CSVLOG_SIDE_SERVER, &record);
+}
 
 int
 load_modules() {
@@ -263,16 +278,18 @@ vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_par
 	out_params->bufsize = g_current_bitrate / 2; 
 
 	// --- CSV 파일에 기록 ---
+	int log_seq = abr_log_seq++;
 	if (savefp_abr != NULL) {
 		struct timeval now;
 		gettimeofday(&now, NULL);
 		ga_save_printf(savefp_abr, "%d,%u.%06u,%d,%d,%lld\n", 
-					abr_log_seq++, now.tv_sec, now.tv_usec, 
+					log_seq, now.tv_sec, now.tv_usec, 
 					g_current_bitrate, g_current_fps, diff);
 	}
+	server_csvlog_abr_update(log_seq, g_current_bitrate, g_current_fps, diff);
 
 	ga_error("ABR: Update - Seq:%d, Bitrate:%dKbps, FPS:%d\n", 
-			abr_log_seq-1, g_current_bitrate, g_current_fps);
+			log_seq, g_current_bitrate, g_current_fps);
     return 1; // 설정이 변경되었음을 알림
 }
 
@@ -426,4 +443,3 @@ main(int argc, char *argv[]) {
 	//
 	return 0;
 }
-

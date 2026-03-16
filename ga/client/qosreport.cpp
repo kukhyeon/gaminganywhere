@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "ga-common.h"
+#include "ga-csvlog.h"
 #include "ga-conf.h"	//cursor
 #include "vsource.h"
 #include "rtspclient.h"
@@ -36,6 +37,21 @@ static qos_record_t qrec[Q_MAX];
 static struct timeval qos_tv;
 
 static void qos_schedule();
+
+static void
+client_csvlog_pktloss(const char *prefix, unsigned lost, unsigned expected, double bitrate_kbps, unsigned jitter) {
+	char note[160];
+	ga_csvlog_record_t record;
+	double loss_ratio = expected > 0 ? (100.0 * lost / expected) : 0.0;
+	snprintf(note, sizeof(note), "prefix=%s;lost=%u;expected=%u;jitter=%u",
+		prefix ? prefix : "", lost, expected, jitter);
+	ga_csvlog_record_reset(&record, "qosreport", "packet-loss");
+	record.metric = "loss_ratio_percent";
+	record.value = loss_ratio;
+	record.aux_value = bitrate_kbps;
+	record.note = note;
+	ga_csvlog_write(GA_CSVLOG_SIDE_CLIENT, &record);
+}
 
 static void
 qos_report(void *clientData) {
@@ -79,15 +95,17 @@ qos_report(void *clientData) {
 				8000000.0*dKB/elapsed,
 				stats->jitter(),
 				qrec[i].rtpsrc->timestampFrequency());
-			if(savefp_pktloss != NULL) {
-				ga_save_printf(savefp_pktloss,
-					"[%lu.%06lu] %s-report: loss=%u/%u (%.2f%%), bitrate=%.0fKbps, jitter=%u\n",
-					now.tv_sec, now.tv_usec, qrec[i].prefix,
-					dExp-dRcvd, dExp, 100.0*(dExp-dRcvd)/dExp,
-					8000000.0*dKB/elapsed,
-					stats->jitter());
-			}
-		} else {
+				if(savefp_pktloss != NULL) {
+					ga_save_printf(savefp_pktloss,
+						"[%lu.%06lu] %s-report: loss=%u/%u (%.2f%%), bitrate=%.0fKbps, jitter=%u\n",
+						now.tv_sec, now.tv_usec, qrec[i].prefix,
+						dExp-dRcvd, dExp, 100.0*(dExp-dRcvd)/dExp,
+						8000000.0*dKB/elapsed,
+						stats->jitter());
+				}
+				client_csvlog_pktloss(qrec[i].prefix, dExp-dRcvd, dExp,
+					8000000.0*dKB/elapsed, stats->jitter());
+			} else {
 			rtsperror("# %u.%06u %s-report: %.0fKB rcvd; pkt-loss=0/0,0.00%%; bitrate=%.0fKbps; jitter=%u (freq=%uHz)\n",
 				(unsigned) now.tv_sec, (unsigned) now.tv_usec,
 				qrec[i].prefix, dKB,
@@ -182,4 +200,3 @@ qos_init(UsageEnvironment *ue) {
 	ga_error("qos-measurement: initialized.\n");
 	return 0;
 }
-
