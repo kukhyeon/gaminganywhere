@@ -35,7 +35,6 @@
 #endif	/* ifndef WIN32 */
 
 #include "ga-common.h"
-#include "ga-csvlog.h"
 #include "ga-avcodec.h"
 #include "ga-conf.h"
 
@@ -57,18 +56,6 @@ static FILE *savefp_rtt = NULL; // 20251219
 			((unsigned char*)&(x))[2],	\
 			((unsigned char*)&(x))[3]
 #endif
-
-static void
-server_csvlog_rtcp_rtt(double rtt_ms, unsigned int lsr, unsigned int dlsr, unsigned int now) {
-	char note[160];
-	ga_csvlog_record_t record;
-	snprintf(note, sizeof(note), "lsr=%u;dlsr=%u;now=%u", lsr, dlsr, now);
-	ga_csvlog_record_reset(&record, "rtspserver", "rtcp-rtt");
-	record.metric = "rtt_ms";
-	record.value = rtt_ms;
-	record.note = note;
-	ga_csvlog_write(GA_CSVLOG_SIDE_SERVER, &record);
-}
 
 void
 rtsp_cleanup(RTSPContext *rtsp, int retcode) {
@@ -1076,7 +1063,6 @@ handle_rtcp_packet(RTSPContext *ctx, const char *buf, size_t buflen) {
 				else {
 					ga_error("RTT-ERROR: Log file not opened.\n");
 				}
-				server_csvlog_rtcp_rtt(rtt_ms, lsr, dlsr, now);
 			}		
 		}
 	}

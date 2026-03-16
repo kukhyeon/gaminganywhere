@@ -33,7 +33,6 @@ unsigned increaseReceiveBufferTo(UsageEnvironment& env,
 #include "rtspclient.h"
 
 #include "ga-common.h"
-#include "ga-csvlog.h"
 #include "ga-conf.h"
 #include "ga-avcodec.h"
 #include "controller.h"
@@ -77,30 +76,6 @@ typedef struct {
 static int rtt_client_sock = -1;
 static pthread_t rtt_client_tid = 0;
 static int rtt_client_running = 0;
-
-static void
-client_csvlog_decode_size(int channel, uint32_t frame_id, int size_bytes) {
-	ga_csvlog_record_t record;
-	ga_csvlog_record_reset(&record, "rtspclient", "decode-size");
-	record.channel = channel;
-	record.frame_id = frame_id;
-	record.size_bytes = size_bytes;
-	ga_csvlog_write(GA_CSVLOG_SIDE_CLIENT, &record);
-}
-
-static void
-client_csvlog_bandwidth(long long bytes, double seconds, double mbps, double kbps) {
-	ga_csvlog_record_t record;
-	char note[128];
-	snprintf(note, sizeof(note), "duration_s=%.4f", seconds);
-	ga_csvlog_record_reset(&record, "rtspclient", "bandwidth");
-	record.size_bytes = bytes;
-	record.metric = "mbps";
-	record.value = mbps;
-	record.aux_value = kbps;
-	record.note = note;
-	ga_csvlog_write(GA_CSVLOG_SIDE_CLIENT, &record);
-}
 
 static void *
 rtt_echo_threadproc(void *arg) {
@@ -867,10 +842,10 @@ play_video_priv(int ch/*channel*/, unsigned char *buffer, int bufsize, struct ti
 				struct timeval decode_tv;
 				gettimeofday(&decode_tv, NULL);
 				fprintf(savefp_decodingsize, 
-					"Frame #%u | Received: %d bytes | Time: %u.%06u\n",
-					frame_index, encoded_packet_size, decode_tv.tv_sec, decode_tv.tv_usec);
+					"Frame #%u | Received: %d bytes | Time: %lld.%06lld\n",
+					frame_index, encoded_packet_size,
+					(long long) decode_tv.tv_sec, (long long) decode_tv.tv_usec);
 			}
-			client_csvlog_decode_size(ch, frame_index, encoded_packet_size);
 
 #ifdef COUNT_FRAME_RATE
 			cf_frame[ch]++;
@@ -923,15 +898,17 @@ play_video_priv(int ch/*channel*/, unsigned char *buffer, int bufsize, struct ti
 				dstframe->data, dstframe->linesize);
 			if(ch==0 && savefp_yuv != NULL) {
 				ga_save_yuv420p(savefp_yuv, vframe[0]->width, vframe[0]->height, dstframe->data, dstframe->linesize);
-				if(savefp_yuvts != NULL) {
-					gettimeofday(&ftv, NULL);
-					// ga_save_printf(savefp_yuvts, "Frame #%08d: %u.%06u\n", frame_index, ftv.tv_sec, ftv.tv_usec);
-					struct decoder_buffer *pdb = &db[ch];
-					ga_save_printf(savefp_yuvts, "Frame #%d: received=%u.%06u, decoded=%u.%06u\n", 
-						frame_index, 
-						pdb->packet_received_time.tv_sec, pdb->packet_received_time.tv_usec,
-						ftv.tv_sec, ftv.tv_usec);
-				}
+			}
+			if(ch == 0 && savefp_yuvts != NULL) {
+				struct decoder_buffer *pdb = &db[ch];
+				gettimeofday(&ftv, NULL);
+				ga_save_printf(savefp_yuvts, "%lld.%06lld,%lld.%06lld,%u,%d\n",
+					(long long) pdb->packet_received_time.tv_sec,
+					(long long) pdb->packet_received_time.tv_usec,
+					(long long) ftv.tv_sec,
+					(long long) ftv.tv_usec,
+					frame_index,
+					encoded_packet_size);
 			}
 			dpipe_store(rtspParam->pipe[ch], data);
 			// request to render it
@@ -1361,7 +1338,7 @@ rtsp_thread(void *param) {
 	TaskScheduler* scheduler = bs;
 	UsageEnvironment* env = BasicUsageEnvironment::createNew(*scheduler);
 	char savefile_yuv[128];
-	char savefile_yuvts[128];
+	char savefile_clientcsv[128];
 	// XXX: reset everything
 	ga_aggregated_reset();
 	drop_video_frame_init(ga_conf_readint("max-tolerable-video-delay"));
@@ -1374,9 +1351,16 @@ rtsp_thread(void *param) {
 	//
 	if(ga_conf_readv("save-yuv-image", savefile_yuv, sizeof(savefile_yuv)) != NULL)
 		savefp_yuv = ga_save_init(savefile_yuv);
-	if(savefp_yuv != NULL
-	&& ga_conf_readv("save-yuv-image-timestamp", savefile_yuvts, sizeof(savefile_yuvts)) != NULL)
-		savefp_yuvts = ga_save_init_txt(savefile_yuvts);
+	savefile_clientcsv[0] = '\0';
+	if(ga_conf_readv("save-client-csv-log", savefile_clientcsv, sizeof(savefile_clientcsv)) == NULL) {
+		ga_conf_readv("save-yuv-image-timestamp", savefile_clientcsv, sizeof(savefile_clientcsv));
+	}
+	if(savefile_clientcsv[0] != '\0') {
+		savefp_yuvts = ga_save_init_txt(savefile_clientcsv);
+		if(savefp_yuvts != NULL) {
+			ga_save_printf(savefp_yuvts, "TimestampReceived,TimestampDecoded,FrameID,SizeBytes\n");
+		}
+	}
 	//rtsperror("*** SAVEFILE: YUV image saved to '%s'; timestamp saved to '%s'.\n",
 		//savefp_yuv   ? savefile_yuv   : "NULL",
 	//	savefp_yuvts ? savefile_yuvts : "NULL");
@@ -1398,9 +1382,9 @@ rtsp_thread(void *param) {
 		}
 	}
 	//
-	rtsperror("*** SAVEFILE: YUV image saved to '%s'; timestamp saved to '%s'; received packet log saved to '%s'.\n",
+	rtsperror("*** SAVEFILE: YUV image saved to '%s'; client csv saved to '%s'; received packet log saved to '%s'; bandwidth log saved to '%s'.\n",
 		savefp_yuv   ? savefile_yuv   : "NULL",
-		savefp_yuvts ? savefile_yuvts : "NULL",
+		savefp_yuvts ? savefile_clientcsv : "NULL",
 		savefp_decodingsize ? savefile_decodingsize : "NULL",
 		savefp_bandwidth ? savefile_bandwidth : "NULL"); // 20251215
 	if(ga_conf_readint("rtp-reordering-threshold") > 0) {
@@ -2048,7 +2032,6 @@ DummySink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBytes,
 					ga_save_printf(savefp_bandwidth, "%u.%06u, %lld, %.4f, %.4f, %.4f\n", 
 						bw_now.tv_sec, bw_now.tv_usec, bw_total_bytes, seconds, mbps, kbps);
 				}
-				client_csvlog_bandwidth(bw_total_bytes, seconds, mbps, kbps);
 
 				bw_total_bytes = 0;
 			bw_last_time = bw_now;

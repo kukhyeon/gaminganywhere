@@ -23,7 +23,6 @@
 #endif
 
 #include "ga-common.h"
-#include "ga-csvlog.h"
 #include "ga-conf.h"
 #include "ga-module.h"
 #include "rtspconf.h"
@@ -51,21 +50,7 @@ static ga_module_t *m_vsource, *m_filter, *m_vencoder, *m_asource, *m_aencoder, 
 static int g_current_bitrate = 0;
 static int g_current_fps = 0;
 static FILE *savefp_abr = NULL;
-static int abr_log_seq = 0;
-
-static void
-server_csvlog_abr_update(int seq, int bitrate_kbps, int fps, long long diff_ms) {
-	char note[128];
-	ga_csvlog_record_t record;
-	snprintf(note, sizeof(note), "diff_ms=%lld", diff_ms);
-	ga_csvlog_record_reset(&record, "ga-server-periodic", "abr-update");
-	record.seq = seq;
-	record.metric = "bitrate_kbps";
-	record.value = bitrate_kbps;
-	record.aux_value = fps;
-	record.note = note;
-	ga_csvlog_write(GA_CSVLOG_SIDE_SERVER, &record);
-}
+static unsigned long long abr_log_seq = 0;
 
 int
 load_modules() {
@@ -278,17 +263,18 @@ vencoder_abr_algorithm(double udp_rtt, double icmp_rtt, ga_abr_config_t *out_par
 	out_params->bufsize = g_current_bitrate / 2; 
 
 	// --- CSV 파일에 기록 ---
-	int log_seq = abr_log_seq++;
+	unsigned long long log_seq = abr_log_seq++;
 	if (savefp_abr != NULL) {
 		struct timeval now;
 		gettimeofday(&now, NULL);
-		ga_save_printf(savefp_abr, "%d,%u.%06u,%d,%d,%lld\n", 
-					log_seq, now.tv_sec, now.tv_usec, 
-					g_current_bitrate, g_current_fps, diff);
+		ga_save_printf(savefp_abr, "%llu,%lld.%06lld,%.3f,%.3f,%lld,%d,%d\n",
+			log_seq,
+			(long long) now.tv_sec, (long long) now.tv_usec,
+			udp_rtt, icmp_rtt, diff,
+			out_params->bitrateKbps, out_params->framerate_n);
 	}
-	server_csvlog_abr_update(log_seq, g_current_bitrate, g_current_fps, diff);
 
-	ga_error("ABR: Update - Seq:%d, Bitrate:%dKbps, FPS:%d\n", 
+	ga_error("ABR: Update - Seq:%llu, Bitrate:%dKbps, FPS:%d\n", 
 			log_seq, g_current_bitrate, g_current_fps);
     return 1; // 설정이 변경되었음을 알림
 }
@@ -300,15 +286,18 @@ abr_controller_thread(void *arg) {
 	if (savefp_abr == NULL) {
 		char savefile_abr[128];
 		// 하드코딩 대신 설정 파일(save-abr-log)에서 경로를 읽어오도록 수정
-		if (ga_conf_readv("save-abr-log", savefile_abr, sizeof(savefile_abr)) != NULL) {
-			savefp_abr = ga_save_init_txt(savefile_abr);
-			if (savefp_abr) {
-				ga_save_printf(savefp_abr, "Seq,Timestamp,Bitrate(Kbps),FPS,Diff(ms)\n");
-				ga_error("SERVER: ABR log file initialized: %s\n", savefile_abr);
-			}
+			if (ga_conf_readv("save-abr-log", savefile_abr, sizeof(savefile_abr)) != NULL) {
+				savefp_abr = ga_save_init_txt(savefile_abr);
+				if (savefp_abr) {
+					ga_save_printf(savefp_abr, "Seq,Timestamp,UDP_RTT(ms),ICMP_RTT(ms),Diff(ms),TargetBitrate(Kbps),TargetFPS\n");
+					ga_error("SERVER: ABR log file initialized: %s\n", savefile_abr);
+				}
 		} else {
 			// 설정값이 없을 때만 기본값 사용
 			savefp_abr = ga_save_init_txt("abr_log.csv");
+			if (savefp_abr) {
+				ga_save_printf(savefp_abr, "Seq,Timestamp,UDP_RTT(ms),ICMP_RTT(ms),Diff(ms),TargetBitrate(Kbps),TargetFPS\n");
+			}
 		}
 	}
 
@@ -318,12 +307,16 @@ abr_controller_thread(void *arg) {
 		g_current_fps = ga_conf_readint("video-fps");
 		if (g_current_fps == 0) g_current_fps = 30;
 	}
+	if (g_current_fps < 1) g_current_fps = 1;
+	if (g_current_fps > 60) g_current_fps = 60;
 	if (g_current_bitrate == 0) {
 		// video-x264-param.conf 의 video-specific[b] 값 읽기
 		// 설정 파일에는 bps 단위(예: 3000000)로 되어 있으므로 Kbps로 변환 (/1000)
 		g_current_bitrate = ga_conf_mapreadint("video-specific", "b") / 1000;
 		if (g_current_bitrate == 0) g_current_bitrate = 3000;
 	}
+	if (g_current_bitrate < 500) g_current_bitrate = 500;
+	if (g_current_bitrate > 5000) g_current_bitrate = 5000;
 	ga_error("ABR: Initialized with Bitrate:%dKbps, FPS:%d\n", g_current_bitrate, g_current_fps);
 	// --------------------------
 

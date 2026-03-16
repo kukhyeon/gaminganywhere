@@ -26,7 +26,6 @@
 #include "encoder-common.h"
 
 #include "ga-common.h"
-#include "ga-csvlog.h"
 #include "ga-avcodec.h"
 #include "ga-conf.h"
 #include "ga-module.h"
@@ -95,13 +94,6 @@ typedef struct ga_abr_config_s {
 	int framerate_n;
 	int framerate_d;
 } ga_abr_config_t;
-
-static void server_csvlog_feedback(uint32_t frame_id, long long rtt_us);
-static void server_csvlog_frame_size(int channel, uint32_t frame_no, int size_bytes);
-static void server_csvlog_frame_id(int channel, uint32_t frame_no, uint32_t frame_id, long long pts);
-static void server_csvlog_frame_count(int channel, int frame_count);
-static void server_csvlog_udp_rtt(uint32_t seq, double rtt_ms);
-static void server_csvlog_icmp_rtt(double rtt_ms);
 //
 
 static void *
@@ -185,7 +177,6 @@ feedback_threadproc(void *arg) {
 				if(savefp_feedback != NULL) {
 					ga_save_printf(savefp_feedback, "%u.%06u, %u, %lld\n", now.tv_sec, now.tv_usec, recv_frame_id, diff_us);
 				}
-				server_csvlog_feedback(recv_frame_id, diff_us);
 
 				frame_send_times.erase(recv_frame_id);
 			}
@@ -216,65 +207,47 @@ static void *savefp_frameid = NULL;            // ⭐ 프레임 ID 로그 파일
 static void *savefp_framesize = NULL;          // ⭐ 프레임 크기 로그 파일
 
 static void *savefp_fps = NULL;                // ⭐ Frame Count 로그 파일 (추가)
+static FILE *savefp_servercsv = NULL;          // 서버 프레임 생애주기 CSV
+static pthread_mutex_t servercsv_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int servercsv_init_attempted = 0;
 
-static void
-server_csvlog_feedback(uint32_t frame_id, long long rtt_us) {
-	ga_csvlog_record_t record;
-	ga_csvlog_record_reset(&record, "encoder-x264", "feedback-rtt");
-	record.frame_id = frame_id;
-	record.metric = "rtt_us";
-	record.value = (double) rtt_us;
-	ga_csvlog_write(GA_CSVLOG_SIDE_SERVER, &record);
+static FILE *
+servercsv_init_locked() {
+	char savefile_servercsv[1024];
+	if(savefp_servercsv != NULL)
+		return savefp_servercsv;
+	if(servercsv_init_attempted != 0)
+		return NULL;
+	servercsv_init_attempted = 1;
+	if(ga_conf_readv("save-server-csv-log", savefile_servercsv, sizeof(savefile_servercsv)) == NULL)
+		return NULL;
+	savefp_servercsv = ga_save_init_txt(savefile_servercsv);
+	if(savefp_servercsv != NULL) {
+		ga_save_printf(savefp_servercsv,
+			"TimestampCaptured,TimestampEncoded,TimestampBeforeSend,Seq,FrameID,SizeBytesEncoded\n");
+		ga_error("SERVER: Frame lifecycle CSV initialized: %s\n", savefile_servercsv);
+	}
+	return savefp_servercsv;
 }
 
 static void
-server_csvlog_frame_size(int channel, uint32_t frame_no, int size_bytes) {
-	ga_csvlog_record_t record;
-	ga_csvlog_record_reset(&record, "encoder-x264", "frame-size");
-	record.channel = channel;
-	record.frame_no = frame_no;
-	record.size_bytes = size_bytes;
-	ga_csvlog_write(GA_CSVLOG_SIDE_SERVER, &record);
-}
-
-static void
-server_csvlog_frame_id(int channel, uint32_t frame_no, uint32_t frame_id, long long pts) {
-	ga_csvlog_record_t record;
-	ga_csvlog_record_reset(&record, "encoder-x264", "frame-id");
-	record.channel = channel;
-	record.frame_no = frame_no;
-	record.frame_id = frame_id;
-	record.pts = pts;
-	ga_csvlog_write(GA_CSVLOG_SIDE_SERVER, &record);
-}
-
-static void
-server_csvlog_frame_count(int channel, int frame_count) {
-	ga_csvlog_record_t record;
-	ga_csvlog_record_reset(&record, "encoder-x264", "frame-count");
-	record.channel = channel;
-	record.metric = "frames_per_interval";
-	record.value = frame_count;
-	ga_csvlog_write(GA_CSVLOG_SIDE_SERVER, &record);
-}
-
-static void
-server_csvlog_udp_rtt(uint32_t seq, double rtt_ms) {
-	ga_csvlog_record_t record;
-	ga_csvlog_record_reset(&record, "encoder-x264", "udp-rtt");
-	record.seq = seq;
-	record.metric = "rtt_ms";
-	record.value = rtt_ms;
-	ga_csvlog_write(GA_CSVLOG_SIDE_SERVER, &record);
-}
-
-static void
-server_csvlog_icmp_rtt(double rtt_ms) {
-	ga_csvlog_record_t record;
-	ga_csvlog_record_reset(&record, "encoder-x264", "icmp-rtt");
-	record.metric = "rtt_ms";
-	record.value = rtt_ms;
-	ga_csvlog_write(GA_CSVLOG_SIDE_SERVER, &record);
+servercsv_write_frame(const struct timeval *captured_tv,
+	const struct timeval *encoded_tv,
+	const struct timeval *before_send_tv,
+	uint32_t seq,
+	uint32_t frame_id,
+	int size_bytes) {
+	FILE *fp;
+	pthread_mutex_lock(&servercsv_mutex);
+	fp = servercsv_init_locked();
+	if(fp != NULL && captured_tv != NULL && encoded_tv != NULL && before_send_tv != NULL) {
+		ga_save_printf(fp, "%lld.%06lld,%lld.%06lld,%lld.%06lld,%u,%u,%d\n",
+			(long long) captured_tv->tv_sec, (long long) captured_tv->tv_usec,
+			(long long) encoded_tv->tv_sec, (long long) encoded_tv->tv_usec,
+			(long long) before_send_tv->tv_sec, (long long) before_send_tv->tv_usec,
+			seq, frame_id, size_bytes);
+	}
+	pthread_mutex_unlock(&servercsv_mutex);
 }
 
 static int
@@ -300,6 +273,13 @@ vencoder_deinit(void *arg) {
 		ga_save_close((FILE*)savefp_fps);
 		savefp_fps = NULL;
 	}
+	pthread_mutex_lock(&servercsv_mutex);
+	if(savefp_servercsv != NULL) {
+		ga_save_close(savefp_servercsv);
+		savefp_servercsv = NULL;
+	}
+	servercsv_init_attempted = 0;
+	pthread_mutex_unlock(&servercsv_mutex);
 
 	for(iid = 0; iid < video_source_channels(); iid++) {
 		if(_sps[iid] != NULL)
@@ -669,6 +649,8 @@ vencoder_threadproc(void *arg) {
 		// encode
 		if(size > 0) {
 			AVPacket pkt;
+			struct timeval encoded_tv, before_send_tv;
+			gettimeofday(&encoded_tv, NULL);
 #if 1
 			av_init_packet(&pkt);
 			pkt.pts = pic_in.i_pts;
@@ -685,6 +667,7 @@ vencoder_threadproc(void *arg) {
 			}
 			pkt.size = pktbufsize;
 			pkt.data = pktbuf;
+			int encoded_packet_size = pkt.size;
 
 			// ⭐ 순차번호 + 작은 난수 기반 고유 프레임 ID 생성
 			uint32_t current_frame_number = sequential_frame_counter++;
@@ -709,7 +692,6 @@ vencoder_threadproc(void *arg) {
 					"Frame #%04u | Encoded: %d bytes | Time: %u.%06u\n",
 					current_frame_number, pkt.size, size_tv.tv_sec, size_tv.tv_usec);
 			}
-			server_csvlog_frame_size(iid, current_frame_number, pkt.size);
 			// 프레임 인덱스를 패킷 앞에 추가
 			if(pkt.size + 4 <= pktbufmax) {
 				// 기존 데이터를 4바이트 뒤로 이동
@@ -735,12 +717,14 @@ vencoder_threadproc(void *arg) {
 					ga_save_printf((FILE*)savefp_frameid, "Frame #%04u → Random ID: %d (pts=%lld, time=%u.%06u)\n", 
 						current_frame_number, (int32_t)frameIndex, pic_in.i_pts, frameid_tv.tv_sec, frameid_tv.tv_usec);
 				}
-				server_csvlog_frame_id(iid, current_frame_number, frameIndex, pic_in.i_pts);
 				
 				// ⭐ 서버 매칭 로그 (순차번호 → 난수 ID 매핑)
 				//ga_error("SERVER: Frame #%04u → Random ID: %d (pts=%lld, size=%d)\n", 
 					//urrent_frame_number, (int32_t)frameIndex, pic_in.i_pts, pkt.size);
 			}
+			gettimeofday(&before_send_tv, NULL);
+			servercsv_write_frame(&frame->timestamp, &encoded_tv, &before_send_tv,
+				current_frame_number, frameIndex, encoded_packet_size);
 			
 			// send the packet
 			if(encoder_send_packet("video-encoder",
@@ -876,7 +860,6 @@ vencoder_threadproc(void *arg) {
 					ga_save_printf((FILE*)savefp_fps, "%u.%06u, %d\n", 
 						current_log_tv.tv_sec, current_log_tv.tv_usec, frame_interval_count);
 				}
-				server_csvlog_frame_count(iid, frame_interval_count);
 				
 				// Reset counters
 				frame_interval_count = 0;
@@ -1001,7 +984,6 @@ rtt_server_threadproc(void *arg) {
 					if (savefp_rtt != NULL) {
 						ga_save_printf(savefp_rtt, "%u.%06u, %u, %.3f\n", now.tv_sec, now.tv_usec, recv_pkt.seq, rtt_ms);
 					}
-					server_csvlog_udp_rtt(recv_pkt.seq, rtt_ms);
 				}
 			}
 		}
@@ -1087,7 +1069,6 @@ icmp_ping_threadproc(void *arg) {
 				if (savefp_icmp) {
 					ga_save_printf(savefp_icmp, "%u.%06u, %.3f\n", now.tv_sec, now.tv_usec, latency);
 				}
-				server_csvlog_icmp_rtt(latency);
 
 				if (latency > 1000.0) {
 					ga_error("WARNING: ICMP High Latency! RTT: %.2f ms\n", latency);
