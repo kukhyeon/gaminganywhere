@@ -246,7 +246,6 @@ ga_xwin_capture(char *buf, int buflen, struct gaRect *rect) {
 	} else {
 		int i;
 		char *src, *dst;
-		src = ((char *) image->data);
 		if(rect->top < 0 || rect->left < 0
 		|| rect->top + rect->height > captured->height
 		|| rect->left + rect->width > captured->width) {
@@ -258,6 +257,7 @@ ga_xwin_capture(char *buf, int buflen, struct gaRect *rect) {
 		}
 		src = ((char *) captured->data);
 		src += captured->bytes_per_line * rect->top;
+		src += RGBA_SIZE * rect->left;
 		dst = (char*) buf;
 		//
 		for(i = 0; i < rect->height; i++) {
