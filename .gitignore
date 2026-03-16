@@ -17,7 +17,7 @@ env-setup
 
 *.tbz
 *.exe
-bin/*
+bin/
 ga/client/ga-client
 ga/server/periodic/ga-server-periodic
 deps.src/libvpx-v1.3.0/vpxenc

@@ -146,17 +146,24 @@ ga_xwin_imageinfo(XImage *image) {
 
 void
 ga_xwin_capture(char *buf, int buflen, struct gaRect *rect) {
-	int frameSize = image->height * image->bytes_per_line;
-	if(buflen < frameSize) {
-		ga_error("FATAL: insufficient buffer size\n");
-		exit(-1);
+	int requiredSize;
+	if(rect == NULL) {
+		requiredSize = image->height * image->bytes_per_line;
+	} else {
+		requiredSize = rect->height * rect->linesize;
 	}
+	if(buflen < requiredSize) {
+		ga_error("ga_xwin_capture: buffer too small (%d < %d), frame dropped.\n", buflen, requiredSize);
+		return;
 	if(XShmGetImage(display, rootWindow, image, 0, 0, XAllPlanes()) == 0) {
-		ga_error("FATAL: XShmGetImage failed.\n");
-		exit(-1);
+		// transient X11 capture failures can happen; retry once before dropping
+		if(XShmGetImage(display, rootWindow, image, 0, 0, XAllPlanes()) == 0) {
+			ga_error("ga_xwin_capture: XShmGetImage failed twice, keep previous frame.\n");
+			return;
+		}
 	}
 	if(rect == NULL) {
-		bcopy(image->data, buf, frameSize/*buflen*/);
+		bcopy(image->data, buf, requiredSize/*buflen*/);
 	} else {
 		int i;
 		char *src, *dst;
