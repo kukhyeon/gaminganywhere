@@ -258,8 +258,6 @@ static long long cf_interval[VIDEO_SOURCE_CHANNEL_MAX];
 // save files
 static FILE *savefp_yuv = NULL;
 static FILE *savefp_yuvts = NULL;
-static FILE *savefp_decodingsize = NULL;  // ⭐ 디코딩 크기 로그 파일
-static FILE *savefp_bandwidth = NULL; // gemini 20251215
 static unsigned rtp_packet_reordering_threshold = DEF_RTP_PACKET_REORDERING_THRESHOLD;
 
 static unsigned rtspClientCount = 0; // Counts how many streams (i.e., "RTSPClient"s) are currently in use.
@@ -835,18 +833,6 @@ play_video_priv(int ch/*channel*/, unsigned char *buffer, int bufsize, struct ti
 			break;
 		}
 		if(got_picture) {
-			//rtsperror("✅ DECODE SUCCESS: Frame index %u successfully decoded at channel %d (pts %lu.%06lu)\n", 
-				//frame_index, ch, pts.tv_sec, pts.tv_usec);
-			// ⭐ 수신된 패킷 크기만 추적 (단순화)
-			if(savefp_decodingsize != NULL) {
-				struct timeval decode_tv;
-				gettimeofday(&decode_tv, NULL);
-				fprintf(savefp_decodingsize, 
-					"Frame #%u | Received: %d bytes | Time: %lld.%06lld\n",
-					frame_index, encoded_packet_size,
-					(long long) decode_tv.tv_sec, (long long) decode_tv.tv_usec);
-			}
-
 #ifdef COUNT_FRAME_RATE
 			cf_frame[ch]++;
 			if(cf_tv0[ch].tv_sec == 0) {
@@ -1352,41 +1338,16 @@ rtsp_thread(void *param) {
 	if(ga_conf_readv("save-yuv-image", savefile_yuv, sizeof(savefile_yuv)) != NULL)
 		savefp_yuv = ga_save_init(savefile_yuv);
 	savefile_clientcsv[0] = '\0';
-	if(ga_conf_readv("save-client-csv-log", savefile_clientcsv, sizeof(savefile_clientcsv)) == NULL) {
-		ga_conf_readv("save-yuv-image-timestamp", savefile_clientcsv, sizeof(savefile_clientcsv));
-	}
+	ga_conf_readv("save-client-csv-log", savefile_clientcsv, sizeof(savefile_clientcsv));
 	if(savefile_clientcsv[0] != '\0') {
 		savefp_yuvts = ga_save_init_txt(savefile_clientcsv);
 		if(savefp_yuvts != NULL) {
 			ga_save_printf(savefp_yuvts, "TimestampReceived,TimestampDecoded,FrameID,SizeBytes\n");
 		}
 	}
-	//rtsperror("*** SAVEFILE: YUV image saved to '%s'; timestamp saved to '%s'.\n",
-		//savefp_yuv   ? savefile_yuv   : "NULL",
-	//	savefp_yuvts ? savefile_yuvts : "NULL");
-	//
-	// ⭐ 디코딩 크기 로그 파일 초기화
-	char savefile_decodingsize[128];
-	if (ga_conf_readbool("enable-decoding-size-log", 0) != 0) {
-		if (ga_conf_readv("save-decoding-size-log", savefile_decodingsize, sizeof(savefile_decodingsize)) != NULL)
-			savefp_decodingsize = ga_save_init_txt(savefile_decodingsize);
-	}
-	// 20251215
-	char savefile_bandwidth[128];
-	if (ga_conf_readbool("enable-bandwidth-log", 0) != 0) {
-		if (ga_conf_readv("save-bandwidth-log", savefile_bandwidth, sizeof(savefile_bandwidth)) != NULL) {
-			savefp_bandwidth = ga_save_init_txt(savefile_bandwidth);
-			if(savefp_bandwidth) {
-				ga_save_printf(savefp_bandwidth, "Timestamp, Bytes, Duration(s), Mbps, Kbps\n");
-			}
-		}
-	}
-	//
-	rtsperror("*** SAVEFILE: YUV image saved to '%s'; client csv saved to '%s'; received packet log saved to '%s'; bandwidth log saved to '%s'.\n",
+	rtsperror("*** SAVEFILE: YUV image saved to '%s'; client csv saved to '%s'.\n",
 		savefp_yuv   ? savefile_yuv   : "NULL",
-		savefp_yuvts ? savefile_clientcsv : "NULL",
-		savefp_decodingsize ? savefile_decodingsize : "NULL",
-		savefp_bandwidth ? savefile_bandwidth : "NULL"); // 20251215
+		savefp_yuvts ? savefile_clientcsv : "NULL");
 	if(ga_conf_readint("rtp-reordering-threshold") > 0) {
 		rtp_packet_reordering_threshold = ga_conf_readint("rtp-reordering-threshold");
 	}
@@ -1442,16 +1403,6 @@ rtsp_thread(void *param) {
 	if(savefp_yuvts != NULL) {
 		ga_save_close(savefp_yuvts);
 		savefp_yuvts = NULL;
-	}
-	// ⭐ 디코딩 크기 로그 파일 정리
-	if(savefp_decodingsize != NULL) {
-		ga_save_close(savefp_decodingsize);
-		savefp_decodingsize = NULL;
-	}
-	// 20251215 bw
-	if(savefp_bandwidth != NULL) {
-		ga_save_close(savefp_bandwidth);
-		savefp_bandwidth = NULL;
 	}
 	//
 	shutdownStream(client);
@@ -2004,40 +1955,6 @@ DummySink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBytes,
 		// claude
 		struct timeval packet_received_time;
 		gettimeofday(&packet_received_time, NULL);
-		
-		// 20251225
- 		static long long bw_total_bytes = 0;
-		static struct timeval bw_last_time = {0, 0};
-
-		if (bw_last_time.tv_sec == 0) {
-			gettimeofday(&bw_last_time, NULL);
-		}
-
-		bw_total_bytes += frameSize;
-
-		struct timeval bw_now;
-		gettimeofday(&bw_now, NULL);
-		long long bw_diff = tvdiff_us(&bw_now, &bw_last_time);
-
-		if (bw_diff >= 1000000) { // 1초마다 갱신
-			double seconds = bw_diff / 1000000.0;
-			double bits = bw_total_bytes * 8.0;
-			double mbps = (bits / seconds) / (1024.0 * 1024.0);
-			double kbps = (bits / seconds) / 1000.0;
-
-			rtsperror("[Network] Bandwidth: %.2f Mbps (%.2f Kbps) | Vol: %lld bytes / %.2f sec\n", 
-				mbps, kbps, bw_total_bytes, seconds);
-
-				if (savefp_bandwidth != NULL) {
-					ga_save_printf(savefp_bandwidth, "%u.%06u, %lld, %.4f, %.4f, %.4f\n", 
-						bw_now.tv_sec, bw_now.tv_usec, bw_total_bytes, seconds, mbps, kbps);
-				}
-
-				bw_total_bytes = 0;
-			bw_last_time = bw_now;
-		}
-
-		// ------------------------------------------
 
 
 #ifndef ANDROID

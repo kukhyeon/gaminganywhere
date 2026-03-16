@@ -29,7 +29,6 @@
 
 static UsageEnvironment *env = NULL;
 static TaskToken qos_task = NULL;
-static FILE *savefp_pktloss = NULL;	//cursor
 //
 static int n_qrec = 0;
 static qos_record_t qrec[Q_MAX];
@@ -79,14 +78,6 @@ qos_report(void *clientData) {
 				8000000.0*dKB/elapsed,
 				stats->jitter(),
 				qrec[i].rtpsrc->timestampFrequency());
-				if(savefp_pktloss != NULL) {
-					ga_save_printf(savefp_pktloss,
-						"[%lu.%06lu] %s-report: loss=%u/%u (%.2f%%), bitrate=%.0fKbps, jitter=%u\n",
-						now.tv_sec, now.tv_usec, qrec[i].prefix,
-						dExp-dRcvd, dExp, 100.0*(dExp-dRcvd)/dExp,
-						8000000.0*dKB/elapsed,
-						stats->jitter());
-				}
 			} else {
 			rtsperror("# %u.%06u %s-report: %.0fKB rcvd; pkt-loss=0/0,0.00%%; bitrate=%.0fKbps; jitter=%u (freq=%uHz)\n",
 				(unsigned) now.tv_sec, (unsigned) now.tv_usec,
@@ -152,12 +143,6 @@ qos_deinit() {
 	if(env != NULL) {
 		env->taskScheduler().unscheduleDelayedTask(qos_task);
 	}
-	// cursor
-	if(savefp_pktloss != NULL) {
-		ga_save_close(savefp_pktloss);
-		savefp_pktloss = NULL;
-	}
-	//	
 	qos_task = NULL;
 	env = NULL;
 	n_qrec = 0;
@@ -168,17 +153,9 @@ qos_deinit() {
 
 int
 qos_init(UsageEnvironment *ue) {
-	char savefile_pktloss[128];
 	env = ue;
 	n_qrec = 0;
 	bzero(qrec, sizeof(qrec));
-	// cursor
-	if(ga_conf_readv("save-pktloss-log", savefile_pktloss, sizeof(savefile_pktloss)) != NULL) {
-		if((savefp_pktloss = ga_save_init_txt(savefile_pktloss)) != NULL) {
-			ga_error("qos-measurement: packet loss log enabled (%s).\n", savefile_pktloss);
-		}
-	}
-	//
 	ga_error("qos-measurement: initialized.\n");
 	return 0;
 }

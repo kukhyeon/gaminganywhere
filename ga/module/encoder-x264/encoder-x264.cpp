@@ -76,11 +76,9 @@ static pthread_mutex_t time_map_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int feedback_sock = -1;
 static pthread_t feedback_tid;
 static int feedback_running = 0;
-static FILE *savefp_feedback = NULL;
 
 static pthread_t icmp_ping_tid;
 static int icmp_ping_running = 0;
-static FILE *savefp_icmp = NULL;
 
 // ABR (Adaptive Bitrate) Components
 static double current_udp_rtt = 0.0;   // ms
@@ -141,18 +139,6 @@ feedback_threadproc(void *arg) {
 	feedback_sock = s;
 	ga_error("feedback server: started on port 55555\n");
 
-	// Log file initialization (Restored)
-	char savefile_feedback[128];
-	savefp_feedback = NULL;
-	if (ga_conf_readbool("enable-feedback-log", 0) != 0) {
-		if (ga_conf_readv("save-feedback-log", savefile_feedback, sizeof(savefile_feedback)) != NULL) {
-			savefp_feedback = ga_save_init_txt(savefile_feedback);
-			if (savefp_feedback) {
-				ga_save_printf(savefp_feedback, "Timestamp, FrameID, RTT(us)\n");
-			}
-		}
-	}
-
 	while(feedback_running) {
 		rlen = sizeof(si_other);
 		if (recvfrom(s, (char*)&recv_frame_id, sizeof(recv_frame_id), 0, (struct sockaddr *) &si_other, &rlen) > 0) {
@@ -172,11 +158,6 @@ feedback_threadproc(void *arg) {
 				pthread_mutex_lock(&rtt_data_mutex);
 				current_udp_rtt = diff_us / 1000.0;
 				pthread_mutex_unlock(&rtt_data_mutex);
-
-				// Save to log file
-				if(savefp_feedback != NULL) {
-					ga_save_printf(savefp_feedback, "%u.%06u, %u, %lld\n", now.tv_sec, now.tv_usec, recv_frame_id, diff_us);
-				}
 
 				frame_send_times.erase(recv_frame_id);
 			}
@@ -203,10 +184,6 @@ static FILE *fsaveenc = NULL;
 // Frame index tracking for debugging,claude  
 static uint32_t sequential_frame_counter = 0;  // ⭐ 순차 카운터
 static uint32_t random_seed = 0;               // ⭐ 난수 시드
-static void *savefp_frameid = NULL;            // ⭐ 프레임 ID 로그 파일
-static void *savefp_framesize = NULL;          // ⭐ 프레임 크기 로그 파일
-
-static void *savefp_fps = NULL;                // ⭐ Frame Count 로그 파일 (추가)
 static FILE *savefp_servercsv = NULL;          // 서버 프레임 생애주기 CSV
 static pthread_mutex_t servercsv_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int servercsv_init_attempted = 0;
@@ -260,19 +237,6 @@ vencoder_deinit(void *arg) {
 	}
 #endif
 
-	// ⭐ 로그 파일들 정리
-	if(savefp_frameid != NULL) {
-		ga_save_close((FILE*)savefp_frameid);
-		savefp_frameid = NULL;
-	}
-	if(savefp_framesize != NULL) {
-		ga_save_close((FILE*)savefp_framesize);
-		savefp_framesize = NULL;
-	}
-	if(savefp_fps != NULL) {
-		ga_save_close((FILE*)savefp_fps);
-		savefp_fps = NULL;
-	}
 	pthread_mutex_lock(&servercsv_mutex);
 	if(savefp_servercsv != NULL) {
 		ga_save_close(savefp_servercsv);
@@ -523,47 +487,6 @@ vencoder_threadproc(void *arg) {
 	int pktbufsize = 0, pktbufmax = 0;
 	int video_written = 0;
 	int64_t x264_pts = 0;
-		
-	// Frame count logging variables
-	int frame_interval_count = 0;
-	struct timeval last_log_tv, current_log_tv;
-	gettimeofday(&last_log_tv, NULL);
-
-	// ⭐ 프레임 ID 로그 파일 초기화 (프로그램 시작 시 한 번만)
-	if (savefp_frameid == NULL) {
-		if (ga_conf_readbool("enable-frame-id-log", 0) != 0) {
-			char savefile_frameid[128];
-			if(ga_conf_readv("save-frame-id-timestamp", savefile_frameid, sizeof(savefile_frameid)) != NULL) {
-				savefp_frameid = ga_save_init_txt(savefile_frameid);
-				ga_error("SERVER: Frame ID log file initialized: %s\n", savefile_frameid);
-			}
-		}
-	}
-
-	// ⭐ 프레임 크기 로그 파일 초기화 (프로그램 시작 시 한 번만)
-	if (savefp_framesize == NULL) {
-		if (ga_conf_readbool("enable-frame-size-log", 0) != 0) {
-			char savefile_framesize[128];
-			if(ga_conf_readv("save-frame-size-log", savefile_framesize, sizeof(savefile_framesize)) != NULL) {
-				savefp_framesize = ga_save_init_txt(savefile_framesize);
-				ga_error("SERVER: Frame size log file initialized: %s\n", savefile_framesize);
-			}
-		}
-	}
-	
-	// ⭐ FPS 로그 파일 초기화 (프로그램 시작 시 한 번만)
-	if (savefp_fps == NULL) {
-		if (ga_conf_readbool("enable-fps-log", 0) != 0) {
-			char savefile_fps[128];
-			if(ga_conf_readv("save-fps-log", savefile_fps, sizeof(savefile_fps)) != NULL) {
-				savefp_fps = ga_save_init_txt(savefile_fps);
-				if(savefp_fps) {
-					ga_save_printf((FILE*)savefp_fps, "Timestamp, FrameCount\n");
-					ga_error("SERVER: Frame count log file initialized: %s\n", savefile_fps);
-				}
-			}
-		}
-	}
 
 	// ⭐ 난수 시드 초기화 (프로그램 시작 시 한 번만)
 	if (random_seed == 0) {
@@ -684,14 +607,6 @@ vencoder_threadproc(void *arg) {
 			pthread_mutex_unlock(&time_map_mutex);
 			//
 
-			// ⭐ 인코딩된 패킷 크기만 추적 (단순화)
-			if(savefp_framesize != NULL) {
-				struct timeval size_tv;
-				gettimeofday(&size_tv, NULL);
-				ga_save_printf((FILE*)savefp_framesize, 
-					"Frame #%04u | Encoded: %d bytes | Time: %u.%06u\n",
-					current_frame_number, pkt.size, size_tv.tv_sec, size_tv.tv_usec);
-			}
 			// 프레임 인덱스를 패킷 앞에 추가
 			if(pkt.size + 4 <= pktbufmax) {
 				// 기존 데이터를 4바이트 뒤로 이동
@@ -709,18 +624,6 @@ vencoder_threadproc(void *arg) {
 				// 패킷 데이터와 크기 업데이트
 				pkt.data = pktbuf;
 				pkt.size += 4;
-				
-				// ⭐ 파일로 프레임 ID 저장 (깔끔한 로그)
-				if(savefp_frameid != NULL) {
-					struct timeval frameid_tv;
-					gettimeofday(&frameid_tv, NULL);
-					ga_save_printf((FILE*)savefp_frameid, "Frame #%04u → Random ID: %d (pts=%lld, time=%u.%06u)\n", 
-						current_frame_number, (int32_t)frameIndex, pic_in.i_pts, frameid_tv.tv_sec, frameid_tv.tv_usec);
-				}
-				
-				// ⭐ 서버 매칭 로그 (순차번호 → 난수 ID 매핑)
-				//ga_error("SERVER: Frame #%04u → Random ID: %d (pts=%lld, size=%d)\n", 
-					//urrent_frame_number, (int32_t)frameIndex, pic_in.i_pts, pkt.size);
 			}
 			gettimeofday(&before_send_tv, NULL);
 			servercsv_write_frame(&frame->timestamp, &encoded_tv, &before_send_tv,
@@ -786,15 +689,6 @@ vencoder_threadproc(void *arg) {
 				// ⭐ 순차번호 + 작은 난수 기반 고유 프레임 ID 생성
 				uint32_t current_frame_number = sequential_frame_counter++;
 				u_int32_t frameIndex = (current_frame_number << 8) | (rand() & 0xFF);  // 상위 24비트: 순차번호, 하위 8비트: 난수
-				
-				// ⭐ 인코딩된 패킷 크기만 추적 (단순화)
-				if(savefp_framesize != NULL) {
-					struct timeval size_tv;
-					gettimeofday(&size_tv, NULL);
-					ga_save_printf((FILE*)savefp_framesize, 
-						"Frame #%04u | Encoded: %d bytes | Time: %u.%06u\n",
-						current_frame_number, pkt.size, size_tv.tv_sec, size_tv.tv_usec);
-				}
 
 				// 프레임 인덱스를 패킷 앞에 추가
 				if(pkt.size + 4 <= pktbufmax) {
@@ -813,18 +707,6 @@ vencoder_threadproc(void *arg) {
 					// 패킷 데이터와 크기 업데이트
 					pkt.data = pktbuf;
 					pkt.size += 4;
-					
-					// ⭐ 파일로 프레임 ID 저장 (깔끔한 로그)
-					if(savefp_frameid != NULL) {
-						struct timeval frameid_tv;
-						gettimeofday(&frameid_tv, NULL);
-						ga_save_printf((FILE*)savefp_frameid, "Frame #%04u → Random ID: %d (pts=%lld, time=%u.%06u)\n", 
-							current_frame_number, (int32_t)frameIndex, pic_in.i_pts, frameid_tv.tv_sec, frameid_tv.tv_usec);
-					}
-					
-					// ⭐ 서버 매칭 로그 (순차번호 → 난수 ID 매핑)
-					ga_error("SERVER: Frame #%04u → Random ID: %d (pts=%lld, size=%d)\n", 
-						current_frame_number, (int32_t)frameIndex, pic_in.i_pts, pkt.size);
 				}
 				
 				if(encoder_send_packet("video-encoder",
@@ -849,21 +731,6 @@ vencoder_threadproc(void *arg) {
 			if(video_written == 0) {
 				video_written = 1;
 				ga_error("first video frame written (pts=%lld)\n", pic_in.i_pts);
-			}
-			// Frame count logging (every 1 second)
-			frame_interval_count++;
-			gettimeofday(&current_log_tv, NULL);
-			long long log_diff_us = tvdiff_us(&current_log_tv, &last_log_tv);
-			
-			if (log_diff_us >= 1000000) { // 1 second
-				if (savefp_fps != NULL) {
-					ga_save_printf((FILE*)savefp_fps, "%u.%06u, %d\n", 
-						current_log_tv.tv_sec, current_log_tv.tv_usec, frame_interval_count);
-				}
-				
-				// Reset counters
-				frame_interval_count = 0;
-				last_log_tv = current_log_tv;
 			}
 		}
 	}
@@ -890,7 +757,6 @@ static pthread_t rtt_tid;
 static int rtt_running = 0;
 static struct sockaddr_in rtt_client_addr;
 static int rtt_client_known = 0;
-static FILE *savefp_rtt = NULL;
 #pragma pack(pop)
 
 typedef struct {
@@ -943,16 +809,6 @@ rtt_server_threadproc(void *arg) {
 	
 	rtt_sock = s;
 	ga_error("RTT server: started on port 55556\n");
-	
-	// Log file init
-	char savefile_rtt[128];
-	if(ga_conf_readv("save-rtt-log", savefile_rtt, sizeof(savefile_rtt)) != NULL) {
-		savefp_rtt = ga_save_init_txt(savefile_rtt);
-		if(savefp_rtt) {
-			ga_save_printf(savefp_rtt, "Timestamp, Seq, RTT(ms)\n");
-			ga_error("SERVER: RTT log file initialized: %s\n", savefile_rtt);
-		}
-	}
 
 	struct timeval last_ping_time, now;
 	gettimeofday(&last_ping_time, NULL);
@@ -981,9 +837,7 @@ rtt_server_threadproc(void *arg) {
 				long long diff_us = tvdiff_us(&now, &sent_tv);
 				if (diff_us >= 0 && diff_us < 10000000) {
 					double rtt_ms = diff_us / 1000.0;
-					if (savefp_rtt != NULL) {
-						ga_save_printf(savefp_rtt, "%u.%06u, %u, %.3f\n", now.tv_sec, now.tv_usec, recv_pkt.seq, rtt_ms);
-					}
+					(void) rtt_ms;
 				}
 			}
 		}
@@ -1004,11 +858,6 @@ rtt_server_threadproc(void *arg) {
 		}
 	}
 
-	if(savefp_rtt != NULL) {
-		ga_save_close(savefp_rtt);
-		savefp_rtt = NULL;
-	}
-
 #ifdef WIN32
 	closesocket(s);
 #else
@@ -1024,7 +873,6 @@ icmp_ping_threadproc(void *arg) {
 	pingobj_iter_t *iter;
 	const char *host = "192.168.37.129"; // Default host
 	double timeout = 0.8;
-	char savefile_icmp[128];
 
 	if ((ping = ping_construct()) == NULL) {
 		ga_error("ICMP Ping: construct failed\n");
@@ -1038,15 +886,6 @@ icmp_ping_threadproc(void *arg) {
 		ga_error("ICMP Ping: failed to add host %s\n", host);
 		ping_destroy(ping);
 		return NULL;
-	}
-
-	// Log file init
-	if(ga_conf_readv("save-icmp-log", savefile_icmp, sizeof(savefile_icmp)) != NULL) {
-		savefp_icmp = ga_save_init_txt(savefile_icmp);
-		if(savefp_icmp) {
-			ga_save_printf(savefp_icmp, "Timestamp, RTT(ms)\n");
-			ga_error("SERVER: ICMP log file initialized: %s\n", savefile_icmp);
-		}
 	}
 
 	while(icmp_ping_running) {
@@ -1063,13 +902,6 @@ icmp_ping_threadproc(void *arg) {
 			ping_iterator_get_info(iter, PING_INFO_LATENCY, &latency, &len);
 
 			if (latency >= 0) {
-				struct timeval now;
-				gettimeofday(&now, NULL);
-				
-				if (savefp_icmp) {
-					ga_save_printf(savefp_icmp, "%u.%06u, %.3f\n", now.tv_sec, now.tv_usec, latency);
-				}
-
 				if (latency > 1000.0) {
 					ga_error("WARNING: ICMP High Latency! RTT: %.2f ms\n", latency);
 				}
@@ -1081,11 +913,6 @@ icmp_ping_threadproc(void *arg) {
 			}
 		}
 		usleep(50000); // 0.05s interval
-	}
-
-	if(savefp_icmp != NULL) {
-		ga_save_close(savefp_icmp);
-		savefp_icmp = NULL;
 	}
 
 	ping_destroy(ping);

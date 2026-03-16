@@ -176,16 +176,6 @@ vencoder_threadproc(void *arg) {
 	// static uint32_t independent_frame_counter = 0; // claude
 	static uint32_t sequential_frame_counter = 0;  // ⭐ 순차 카운터
 	static uint32_t random_seed = 0;               // ⭐ 난수 시드
-	static FILE *savefp_frameid = NULL;            // ⭐ 프레임 ID 로그 파일
-	
-	// ⭐ 프레임 ID 로그 파일 초기화 (프로그램 시작 시 한 번만)
-	if (savefp_frameid == NULL) {
-		char savefile_frameid[128];
-		if(ga_conf_readv("save-frame-id-timestamp", savefile_frameid, sizeof(savefile_frameid)) != NULL) {
-			savefp_frameid = ga_save_init_txt(savefile_frameid);
-			ga_error("SERVER: Frame ID log file initialized: %s\n", savefile_frameid);
-		}
-	}
 	
 	// ⭐ 난수 시드 초기화 (프로그램 시작 시 한 번만)
 	if (random_seed == 0) {
@@ -312,14 +302,6 @@ vencoder_threadproc(void *arg) {
 				
 				// ga_error("SERVER: Added frame index %u to packet (pts=%lld, size=%d)\n", 
 					// frameIndex, pts, pkt.size);
-				// ⭐ 파일로 프레임 ID 저장 (깔끔한 로그)
-				if(savefp_frameid != NULL) {
-					struct timeval frameid_tv;
-					gettimeofday(&frameid_tv, NULL);
-					ga_save_printf(savefp_frameid, "Frame #%04u → Random ID: %d (pts=%lld, time=%u.%06u)\n", 
-						current_frame_number, (int32_t)frameIndex, pts, frameid_tv.tv_sec, frameid_tv.tv_usec);
-				}
-				
 				// ⭐ 서버 매칭 로그 (순차번호 → 난수 ID 매핑)
 				ga_error("SERVER: Frame #%04u → Random ID: %d (pts=%lld, size=%d)\n", 
 					current_frame_number, (int32_t)frameIndex, pts, pkt.size);
@@ -599,5 +581,4 @@ module_load() {
 	m.ioctl = vencoder_ioctl;
 	return &m;
 }
-
 
